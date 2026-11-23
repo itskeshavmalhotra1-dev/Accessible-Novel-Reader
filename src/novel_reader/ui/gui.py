@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+import re
 import threading
 from typing import Dict, List, Optional
 import wx
@@ -49,6 +50,7 @@ WELCOME_TEXT = (
     "Essential Shortcuts:\r\n"
     "- PageDown: Next Page of novels\r\n"
     "- PageUp: Previous Page of novels\r\n"
+    "- Ctrl+J: Jump to Chapter by number\r\n"
     "- Alt+N: Next Chapter\r\n"
     "- Alt+P: Previous Chapter\r\n"
     "- F5: Reload current source\r\n\r\n"
@@ -56,7 +58,7 @@ WELCOME_TEXT = (
     "1. Use Tab / Shift+Tab to navigate between lists and controls.\r\n"
     "2. In Categories, press Enter to load novels for that category.\r\n"
     "3. In Novels, press Enter to load chapters. Use PageDown / PageUp to browse pages.\r\n"
-    "4. In Chapters, press Enter to open and read a chapter.\r\n"
+    "4. In Chapters, press Enter to open a chapter (or press Ctrl+J to jump directly).\r\n"
     "5. In the Reading Section, use Up Arrow and Down Arrow to read line-by-line with NVDA.\r\n"
     "6. Press Alt+N to move to the next chapter anytime."
 )
@@ -67,6 +69,7 @@ ID_HOTKEY_PREV_PAGE = 2002
 ID_HOTKEY_NEXT_PAGE = 2003
 ID_HOTKEY_PREV_CHAPTER = 2004
 ID_HOTKEY_NEXT_CHAPTER = 2005
+ID_HOTKEY_JUMP_CHAPTER = 2006
 
 
 class NovelReaderFrame(wx.Frame):
@@ -85,6 +88,7 @@ class NovelReaderFrame(wx.Frame):
         # State
         self.categories: List[CategoryItem] = []
         self.novels: List[NovelItem] = []
+        self.all_chapters: List[ChapterItem] = []
         self.chapters: List[ChapterItem] = []
         self.current_source: Optional[BaseNovelSource] = None
         self.current_category: Optional[CategoryItem] = None
@@ -94,6 +98,9 @@ class NovelReaderFrame(wx.Frame):
         self.current_page: int = 1
         self.search_mode: bool = False
         self.last_search_query: str = ""
+        self.chapter_range_size: int = 100
+        self.current_range_idx: int = 0
+        self.chapter_sort_asc: bool = True
 
         # 0ms Memory Caches
         self._category_cache: Dict[str, List[CategoryItem]] = {}
@@ -189,7 +196,27 @@ class NovelReaderFrame(wx.Frame):
         page_sizer.Add(self.lbl_page_info, 1, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
         page_sizer.Add(self.btn_next_page, 0, wx.ALIGN_CENTER_VERTICAL)
 
+        # Smart Chapter Header (Range Dropdown + Jump Button + Sort Button)
+        chap_header_sizer = wx.BoxSizer(wx.HORIZONTAL)
         lbl_chapters = wx.StaticText(panel, label="Chapters:")
+        self.choice_chapter_range = wx.Choice(panel, choices=["All Chapters"])
+        self.choice_chapter_range.SetName("Chapter Range")
+        self.choice_chapter_range.SetSelection(0)
+        self.choice_chapter_range.Hide()
+
+        self.btn_jump_chapter = wx.Button(panel, label="Jump (Ctrl+J)", size=(96, 26))
+        self.btn_jump_chapter.SetName("Jump to Chapter (Ctrl+J)")
+        self.btn_jump_chapter.Disable()
+
+        self.btn_sort_chapters = wx.Button(panel, label="Sort: 1-9", size=(76, 26))
+        self.btn_sort_chapters.SetName("Toggle Chapters Sort Order")
+        self.btn_sort_chapters.Disable()
+
+        chap_header_sizer.Add(lbl_chapters, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        chap_header_sizer.Add(self.choice_chapter_range, 1, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        chap_header_sizer.Add(self.btn_jump_chapter, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        chap_header_sizer.Add(self.btn_sort_chapters, 0, wx.ALIGN_CENTER_VERTICAL)
+
         self.list_chapters = wx.ListBox(panel, style=wx.LB_SINGLE)
         self.list_chapters.SetName("Chapters")
         self.list_chapters.Set(["Select a novel to view chapters"])
@@ -200,7 +227,7 @@ class NovelReaderFrame(wx.Frame):
         col2_sizer.Add(lbl_novels, 0, wx.BOTTOM, 4)
         col2_sizer.Add(self.list_novels, 1, wx.EXPAND | wx.BOTTOM, 6)
         col2_sizer.Add(page_sizer, 0, wx.EXPAND | wx.BOTTOM, 8)
-        col2_sizer.Add(lbl_chapters, 0, wx.BOTTOM, 4)
+        col2_sizer.Add(chap_header_sizer, 0, wx.EXPAND | wx.BOTTOM, 4)
         col2_sizer.Add(self.list_chapters, 1, wx.EXPAND | wx.BOTTOM, 8)
         col2_sizer.Add(self.btn_read_chapter, 0, wx.EXPAND)
 
@@ -278,6 +305,10 @@ class NovelReaderFrame(wx.Frame):
         self.list_chapters.Bind(wx.EVT_KEY_DOWN, self._on_chapter_key_down)
         self.btn_read_chapter.Bind(wx.EVT_BUTTON, self.on_chapter_selected)
 
+        self.choice_chapter_range.Bind(wx.EVT_CHOICE, self.on_chapter_range_changed)
+        self.btn_jump_chapter.Bind(wx.EVT_BUTTON, self.on_jump_to_chapter)
+        self.btn_sort_chapters.Bind(wx.EVT_BUTTON, self.on_toggle_chapter_sort)
+
         self.btn_prev_chapter.Bind(wx.EVT_BUTTON, self.on_prev_chapter)
         self.btn_next_chapter.Bind(wx.EVT_BUTTON, self.on_next_chapter)
 
@@ -291,6 +322,7 @@ class NovelReaderFrame(wx.Frame):
             wx.AcceleratorEntry(wx.ACCEL_NORMAL, wx.WXK_PAGEDOWN, ID_HOTKEY_NEXT_PAGE),
             wx.AcceleratorEntry(wx.ACCEL_ALT, ord('P'), ID_HOTKEY_PREV_CHAPTER),
             wx.AcceleratorEntry(wx.ACCEL_ALT, ord('N'), ID_HOTKEY_NEXT_CHAPTER),
+            wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('J'), ID_HOTKEY_JUMP_CHAPTER),
         ]
         self.SetAcceleratorTable(wx.AcceleratorTable(accel_entries))
 
@@ -300,6 +332,7 @@ class NovelReaderFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_next_page, id=ID_HOTKEY_NEXT_PAGE)
         self.Bind(wx.EVT_MENU, self.on_prev_chapter, id=ID_HOTKEY_PREV_CHAPTER)
         self.Bind(wx.EVT_MENU, self.on_next_chapter, id=ID_HOTKEY_NEXT_CHAPTER)
+        self.Bind(wx.EVT_MENU, self.on_jump_to_chapter, id=ID_HOTKEY_JUMP_CHAPTER)
 
     def _on_resize(self, event: wx.SizeEvent) -> None:
         self.Layout()
@@ -598,17 +631,176 @@ class NovelReaderFrame(wx.Frame):
         if token != self._chap_token:
             return
 
-        self.chapters = chapters
-        items = [ch.title for ch in chapters] if chapters else ["No chapters available for this novel"]
-        self.list_chapters.Set(items)
+        self.all_chapters = list(chapters)
+        self.current_range_idx = 0
+        total = len(self.all_chapters)
+
+        if not chapters:
+            self.chapters = []
+            self.list_chapters.Set(["No chapters available for this novel"])
+            self.choice_chapter_range.Hide()
+            self.btn_jump_chapter.Disable()
+            self.btn_sort_chapters.Disable()
+            self.Layout()
+            return
+
+        self.btn_jump_chapter.Enable(True)
+        self.btn_sort_chapters.Enable(True)
+
+        if not self.chapter_sort_asc:
+            self.all_chapters.reverse()
+
+        self._rebuild_chapter_ranges(select_bucket=0, select_item=0)
 
         title = self.current_novel.title if self.current_novel else "Novel"
-        msg = f"{len(chapters)} chapters loaded for {title}."
+        msg = f"{total} chapters loaded for {title}."
         self.SetStatusText(msg, 0)
         self.announcer.play_earcon("complete")
+        if total > self.chapter_range_size:
+            self.announcer.speak(f"{total} chapters loaded. Viewing chapters 1 to {min(total, self.chapter_range_size)}.")
 
-        if chapters:
-            self.list_chapters.SetSelection(0)
+    def _rebuild_chapter_ranges(self, select_bucket: int = 0, select_item: int = 0) -> None:
+        total = len(self.all_chapters)
+        if total == 0:
+            return
+
+        if total <= self.chapter_range_size:
+            self.choice_chapter_range.Hide()
+            self.current_range_idx = 0
+            self.chapters = list(self.all_chapters)
+            self.list_chapters.Set([ch.title for ch in self.chapters])
+            if self.chapters:
+                clamped = max(0, min(select_item, len(self.chapters) - 1))
+                self.list_chapters.SetSelection(clamped)
+                self.current_chapter = self.chapters[clamped]
+        else:
+            num_buckets = (total + self.chapter_range_size - 1) // self.chapter_range_size
+            labels = []
+            for b in range(num_buckets):
+                start = b * self.chapter_range_size + 1
+                end = min((b + 1) * self.chapter_range_size, total)
+                labels.append(f"Chapters {start} - {end}")
+
+            self.choice_chapter_range.Set(labels)
+            clamped_bucket = max(0, min(select_bucket, num_buckets - 1))
+            self.choice_chapter_range.SetSelection(clamped_bucket)
+            self.choice_chapter_range.Show()
+            self._render_chapter_bucket(clamped_bucket, select_item=select_item)
+
+        self.Layout()
+
+    def _render_chapter_bucket(self, bucket_idx: int, select_item: int = 0) -> None:
+        self.current_range_idx = bucket_idx
+        start = bucket_idx * self.chapter_range_size
+        end = min(start + self.chapter_range_size, len(self.all_chapters))
+        self.chapters = self.all_chapters[start:end]
+        self.list_chapters.Set([ch.title for ch in self.chapters])
+
+        if self.chapters:
+            clamped = max(0, min(select_item, len(self.chapters) - 1))
+            self.list_chapters.SetSelection(clamped)
+            self.current_chapter = self.chapters[clamped]
+
+    def on_chapter_range_changed(self, event: Optional[wx.Event] = None) -> None:
+        sel = self.choice_chapter_range.GetSelection()
+        if sel != wx.NOT_FOUND:
+            self._render_chapter_bucket(sel, select_item=0)
+            range_label = self.choice_chapter_range.GetString(sel)
+            self.announcer.speak(f"Showing {range_label}.")
+
+    def on_toggle_chapter_sort(self, event: Optional[wx.Event] = None) -> None:
+        if not self.all_chapters:
+            return
+
+        self.chapter_sort_asc = not self.chapter_sort_asc
+        self.all_chapters.reverse()
+
+        if self.chapter_sort_asc:
+            self.btn_sort_chapters.SetLabel("Sort: 1-9")
+            msg = "Chapters sorted oldest first."
+        else:
+            self.btn_sort_chapters.SetLabel("Sort: 9-1")
+            msg = "Chapters sorted newest first."
+
+        self._rebuild_chapter_ranges(select_bucket=0, select_item=0)
+        self.announcer.speak(msg)
+
+    def on_jump_to_chapter(self, event: Optional[wx.Event] = None, target_input: Optional[str] = None) -> None:
+        total = len(self.all_chapters)
+        if total == 0:
+            self.announcer.speak("No chapters loaded to jump to.")
+            return
+
+        if target_input is not None:
+            val = target_input.strip()
+        else:
+            dlg = wx.TextEntryDialog(
+                self,
+                f"Enter chapter number to jump to (1 to {total}):",
+                "Jump to Chapter",
+                "",
+            )
+            dlg.SetName("Jump to Chapter Dialog")
+
+            if dlg.ShowModal() == wx.ID_OK:
+                val = dlg.GetValue().strip()
+                dlg.Destroy()
+            else:
+                dlg.Destroy()
+                return
+
+        match = re.search(r"\d+", val)
+        if not match:
+            self.announcer.speak("Please enter a valid chapter number.")
+            return
+
+        num = int(match.group())
+        target_idx = -1
+        for idx, ch in enumerate(self.all_chapters):
+            if ch.index == num:
+                target_idx = idx
+                break
+            m = re.search(r"chapter\s*(\d+)", ch.title, re.IGNORECASE)
+            if m and int(m.group(1)) == num:
+                target_idx = idx
+                break
+
+        if target_idx == -1:
+            if 1 <= num <= total:
+                target_idx = num - 1 if self.chapter_sort_asc else (total - num)
+            else:
+                self.announcer.speak(f"Chapter {num} is outside range 1 to {total}.")
+                return
+
+        self._sync_chapter_bucket_selection(target_idx)
+        target_chapter = self.all_chapters[target_idx]
+        self.current_chapter = target_chapter
+        self._load_chapter_by_url(target_chapter.url)
+        self.announcer.speak(f"Jumped to {target_chapter.title}.")
+
+    def _sync_chapter_bucket_selection(self, global_idx: int) -> None:
+        if len(self.all_chapters) <= self.chapter_range_size:
+            if 0 <= global_idx < len(self.chapters):
+                self.list_chapters.SetSelection(global_idx)
+                self.current_chapter = self.chapters[global_idx]
+        else:
+            bucket_idx = global_idx // self.chapter_range_size
+            local_idx = global_idx % self.chapter_range_size
+            if bucket_idx != self.current_range_idx:
+                self.choice_chapter_range.SetSelection(bucket_idx)
+                self._render_chapter_bucket(bucket_idx, select_item=local_idx)
+            else:
+                self.list_chapters.SetSelection(local_idx)
+                if 0 <= local_idx < len(self.chapters):
+                    self.current_chapter = self.chapters[local_idx]
+
+    def _get_current_global_chapter_idx(self) -> int:
+        if not self.current_chapter:
+            return -1
+        for idx, ch in enumerate(self.all_chapters):
+            if ch.url == self.current_chapter.url:
+                return idx
+        return -1
 
     # ---------------- 5. Chapter Selection -> Reading Area ----------------
 
@@ -683,14 +875,20 @@ class NovelReaderFrame(wx.Frame):
 
         if self.current_chapter_content.next_chapter_url:
             next_url = self.current_chapter_content.next_chapter_url
-            self._advance_chapter_selection_by(1)
+            for idx, ch in enumerate(self.all_chapters):
+                if ch.url == next_url:
+                    self._sync_chapter_bucket_selection(idx)
+                    break
             self._load_chapter_by_url(next_url)
             return
 
-        idx = self.list_chapters.GetSelection()
-        if idx != wx.NOT_FOUND and idx + 1 < len(self.chapters):
-            self.list_chapters.SetSelection(idx + 1)
-            self.on_chapter_selected(None)
+        cur_idx = self._get_current_global_chapter_idx()
+        if cur_idx != -1 and cur_idx + 1 < len(self.all_chapters):
+            next_idx = cur_idx + 1
+            self._sync_chapter_bucket_selection(next_idx)
+            target = self.all_chapters[next_idx]
+            self.current_chapter = target
+            self._load_chapter_by_url(target.url)
         else:
             self.SetStatusText("No further chapters available.", 0)
 
@@ -703,23 +901,22 @@ class NovelReaderFrame(wx.Frame):
 
         if self.current_chapter_content.prev_chapter_url:
             prev_url = self.current_chapter_content.prev_chapter_url
-            self._advance_chapter_selection_by(-1)
+            for idx, ch in enumerate(self.all_chapters):
+                if ch.url == prev_url:
+                    self._sync_chapter_bucket_selection(idx)
+                    break
             self._load_chapter_by_url(prev_url)
             return
 
-        idx = self.list_chapters.GetSelection()
-        if idx != wx.NOT_FOUND and idx > 0:
-            self.list_chapters.SetSelection(idx - 1)
-            self.on_chapter_selected(None)
+        cur_idx = self._get_current_global_chapter_idx()
+        if cur_idx > 0:
+            prev_idx = cur_idx - 1
+            self._sync_chapter_bucket_selection(prev_idx)
+            target = self.all_chapters[prev_idx]
+            self.current_chapter = target
+            self._load_chapter_by_url(target.url)
         else:
             self.SetStatusText("Already at first chapter.", 0)
-
-    def _advance_chapter_selection_by(self, delta: int) -> None:
-        idx = self.list_chapters.GetSelection()
-        if idx != wx.NOT_FOUND:
-            new_idx = idx + delta
-            if 0 <= new_idx < len(self.chapters):
-                self.list_chapters.SetSelection(new_idx)
 
     # ---------------- 7. Auto-Updater Integration ----------------
 

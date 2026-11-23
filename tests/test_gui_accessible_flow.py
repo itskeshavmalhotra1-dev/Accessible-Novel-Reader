@@ -185,3 +185,70 @@ def test_category_pagination_flow():
 
     frame.Destroy()
     app.Destroy()
+
+
+def test_smart_chapter_bucketing_and_boundary_crossover():
+    app = wx.App(False)
+    frame = NovelReaderFrame(None)
+
+    mock = MockNovelSource()
+    frame.current_source = mock
+    frame.current_novel = NovelItem(id="n_large", title="Grand Odyssey", url="http://mock.test/novel/odyssey", source_name="MockSource")
+
+    # Generate 250 chapters
+    large_chapters = [
+        ChapterItem(index=i, title=f"Chapter {i}: Part {i}", url=f"http://mock.test/novel/odyssey/ch{i}")
+        for i in range(1, 251)
+    ]
+    # Pre-cache chapter content for boundaries: ch100, ch101, ch102
+    for i in [100, 101, 102]:
+        url = f"http://mock.test/novel/odyssey/ch{i}"
+        next_url = f"http://mock.test/novel/odyssey/ch{i+1}" if i < 250 else None
+        prev_url = f"http://mock.test/novel/odyssey/ch{i-1}" if i > 1 else None
+        frame._content_cache[url] = ChapterContent(
+            title=f"Chapter {i}: Part {i}",
+            content=f"Text of chapter {i}.",
+            url=url,
+            next_chapter_url=next_url,
+            prev_chapter_url=prev_url,
+        )
+
+    frame._update_chapter_list(large_chapters, frame._chap_token)
+
+    # 1. Verify initial bucketing
+    assert len(frame.all_chapters) == 250
+    assert frame.choice_chapter_range.IsShown() is True
+    assert frame.choice_chapter_range.GetCount() == 3
+    assert frame.choice_chapter_range.GetSelection() == 0  # Bucket 0: 1-100
+    assert frame.list_chapters.GetCount() == 100
+
+    # 2. Jump directly to Chapter 100 via smart jump
+    frame.on_jump_to_chapter(target_input="100")
+    assert frame.choice_chapter_range.GetSelection() == 0  # Still in bucket 0
+    assert frame.list_chapters.GetSelection() == 99        # 100th item (0-indexed 99)
+    assert frame.current_chapter.title == "Chapter 100: Part 100"
+    assert frame.lbl_chapter_title.GetLabel() == "Chapter 100: Part 100"
+
+    # 3. Next Chapter (crossing bucket boundary from 100 to 101)
+    frame.on_next_chapter(None)
+    assert frame.choice_chapter_range.GetSelection() == 1  # Automatically switched to bucket 1 (101-200)
+    assert frame.list_chapters.GetSelection() == 0        # 1st item in bucket 1
+    assert frame.current_chapter.title == "Chapter 101: Part 101"
+    assert frame.lbl_chapter_title.GetLabel() == "Chapter 101: Part 101"
+
+    # 4. Previous Chapter (crossing bucket boundary backward from 101 to 100)
+    frame.on_prev_chapter(None)
+    assert frame.choice_chapter_range.GetSelection() == 0  # Automatically switched back to bucket 0
+    assert frame.list_chapters.GetSelection() == 99        # Last item in bucket 0
+    assert frame.current_chapter.title == "Chapter 100: Part 100"
+
+    # 5. Test jump to out-of-range or non-numeric input does not alter state or crash
+    cur_sel = frame.list_chapters.GetSelection()
+    frame.on_jump_to_chapter(target_input="not_a_number")
+    assert frame.list_chapters.GetSelection() == cur_sel
+
+    frame.on_jump_to_chapter(target_input="9999")
+    assert frame.list_chapters.GetSelection() == cur_sel
+
+    frame.Destroy()
+    app.Destroy()
