@@ -1,0 +1,2 @@
+# Core runtime requirements
+charset-normalizer>=3.3.0

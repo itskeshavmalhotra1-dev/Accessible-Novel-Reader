@@ -1,0 +1,27 @@
+# Auto detect text files and perform LF normalization on checkin
+* text=auto
+
+# Source code
+*.py text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Batch and PowerShell scripts
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.epub binary
+*.pdf binary
+*.mobi binary
+*.db binary
+*.sqlite binary
