@@ -18,8 +18,10 @@ def test_parse_version() -> None:
     assert parse_version("1.0.0") == (1, 0, 0)
     assert parse_version("v1.2.3") == (1, 2, 3)
     assert parse_version("v2.1") == (2, 1, 0)
+    assert parse_version("26.0") == (26, 0, 0)
+    assert parse_version("v26.0") == (26, 0, 0)
     assert parse_version("") == (0, 0, 0)
-    assert parse_version("v1.0.1") > parse_version("1.0.0")
+    assert parse_version("v26.0") > parse_version("1.0.0")
     assert parse_version("v2.0.0") > parse_version("v1.9.9")
     assert parse_version("1.0.0") == parse_version("v1.0.0")
 

@@ -23,7 +23,7 @@ import requests
 
 from novel_reader.accessibility.announcer import get_default_announcer
 
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "26.0"
 DEFAULT_GITHUB_REPO = os.environ.get("NOVEL_READER_REPO", "itskeshavmalhotra1-dev/Accessible-Novel-Reader")
 USER_AGENT = f"AccessibleNovelReader-Updater/{CURRENT_VERSION}"
 
