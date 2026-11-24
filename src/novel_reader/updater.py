@@ -55,7 +55,11 @@ def is_standalone_executable() -> bool:
 def get_install_paths() -> Dict[str, Any]:
     """Detect installation mode, root directory, and git repository presence."""
     if is_standalone_executable():
-        install_dir = os.path.dirname(os.path.abspath(sys.executable))
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        if os.path.basename(exe_dir).lower() == "bin":
+            install_dir = os.path.dirname(exe_dir)
+        else:
+            install_dir = exe_dir
         return {
             "mode": "standalone",
             "install_dir": install_dir,

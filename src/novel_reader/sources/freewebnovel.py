@@ -4,12 +4,12 @@ Scraper for freewebnovel.com.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import re
 from typing import List, Optional
 from urllib.parse import quote_plus, urljoin
 
 from bs4 import BeautifulSoup
-import requests
 
 from novel_reader.sources.base import (
     BaseNovelSource,
@@ -18,6 +18,7 @@ from novel_reader.sources.base import (
     ChapterItem,
     NovelItem,
 )
+from novel_reader.utils.network import http_get, http_get_json, http_get_soup
 from novel_reader.utils.text import normalize_whitespace, strip_html_tags
 
 DEFAULT_HEADERS = {
@@ -47,21 +48,17 @@ class FreeWebNovelSource(BaseNovelSource):
             CategoryItem(name="Latest Novels", url=f"{self.base_url}/sort/latest-novel"),
             CategoryItem(name="Completed Novels", url=f"{self.base_url}/sort/completed-novel"),
         ]
-        try:
-            resp = requests.get(self.base_url, headers=DEFAULT_HEADERS, timeout=10)
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                seen_urls = {c.url for c in categories}
-                for a in soup.find_all("a", href=True):
-                    href = a["href"].strip()
-                    if href.startswith("/genre/"):
-                        full_url = urljoin(self.base_url, href)
-                        name = a.text.strip()
-                        if name and full_url not in seen_urls:
-                            seen_urls.add(full_url)
-                            categories.append(CategoryItem(name=name, url=full_url))
-        except Exception:
-            pass
+        soup = http_get_soup(self.base_url, timeout=12)
+        if soup:
+            seen_urls = {c.url for c in categories}
+            for a in soup.find_all("a", href=True):
+                href = a["href"].strip()
+                if href.startswith("/genre/"):
+                    full_url = urljoin(self.base_url, href)
+                    name = a.text.strip()
+                    if name and full_url not in seen_urls:
+                        seen_urls.add(full_url)
+                        categories.append(CategoryItem(name=name, url=full_url))
         return categories
 
     def get_novels_by_category(self, category_url: str, page: int = 1) -> List[NovelItem]:
@@ -77,26 +74,20 @@ class FreeWebNovelSource(BaseNovelSource):
         else:
             target_url = base_cat_url
 
-        try:
-            resp = requests.get(target_url, headers=DEFAULT_HEADERS, timeout=12)
-            if resp.status_code != 200:
-                return []
-            return self._parse_novel_list(resp.text)
-        except Exception:
+        html = http_get(target_url, timeout=15)
+        if not html:
             return []
+        return self._parse_novel_list(html)
 
     def search(self, query: str, page: int = 1) -> List[NovelItem]:
         encoded = quote_plus(query.strip())
         url = f"{self.base_url}/search?keyword={encoded}"
         if page > 1:
             url += f"&page={page}"
-        try:
-            resp = requests.get(url, headers=DEFAULT_HEADERS, timeout=12)
-            if resp.status_code != 200:
-                return []
-            return self._parse_novel_list(resp.text)
-        except Exception:
+        html = http_get(url, timeout=15)
+        if not html:
             return []
+        return self._parse_novel_list(html)
 
     def get_latest(self, page: int = 1) -> List[NovelItem]:
         url = f"{self.base_url}/sort/latest-release"
@@ -157,55 +148,96 @@ class FreeWebNovelSource(BaseNovelSource):
         return items
 
     def get_chapters(self, novel_url: str) -> List[ChapterItem]:
-        try:
-            resp = requests.get(novel_url, headers=DEFAULT_HEADERS, timeout=12)
-            if resp.status_code != 200:
-                return []
-
-            soup = BeautifulSoup(resp.text, "html.parser")
-            chapters: List[ChapterItem] = []
-            seen_urls = set()
-
-            chapter_anchors = soup.select("ul.ul-list5 li a, .m-newest2 ul li a, .m-newest1 ul li a")
-            if not chapter_anchors:
-                chapter_anchors = [a for a in soup.find_all("a", href=True) if "/chapter-" in a["href"]]
-
-            for idx, a in enumerate(chapter_anchors, start=1):
-                href = a["href"].strip()
-                full_url = urljoin(self.base_url, href)
-                if full_url in seen_urls:
-                    continue
-                seen_urls.add(full_url)
-
-                title = (a.get("title") or a.text).strip()
-                if not title:
-                    title = f"Chapter {idx}"
-
-                chapters.append(
-                    ChapterItem(
-                        index=idx,
-                        title=title,
-                        url=full_url,
-                        novel_url=novel_url,
-                    )
-                )
-
-            # Some sites list newest first; if Chapter 1 is at the end, reverse it
-            if len(chapters) > 1 and "chapter 1" in chapters[-1].title.lower():
-                chapters.reverse()
-                for idx, ch in enumerate(chapters, start=1):
-                    ch.index = idx
-
-            return chapters
-        except Exception:
+        soup = http_get_soup(novel_url, timeout=15)
+        if not soup:
             return []
 
-    def get_chapter_content(self, chapter_url: str) -> ChapterContent:
-        resp = requests.get(chapter_url, headers=DEFAULT_HEADERS, timeout=15)
-        if resp.status_code != 200:
-            raise RuntimeError(f"Failed to fetch chapter from {chapter_url} (HTTP {resp.status_code})")
+        chapters: List[ChapterItem] = []
+        seen_urls = set()
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        # 1. Check if indexListPage has totalPage pagination (e.g. data-total-page="17")
+        page_root = soup.select_one("#indexListPage")
+        total_pages = 1
+        if page_root and page_root.get("data-total-page"):
+            try:
+                total_pages = int(page_root.get("data-total-page"))
+            except ValueError:
+                total_pages = 1
+
+        if total_pages > 1:
+            clean_novel_url = novel_url.split("?")[0].rstrip("/")
+            pages_to_fetch = list(range(1, total_pages + 1))
+
+            def fetch_chapter_page(p: int) -> str:
+                ajax_url = f"{clean_novel_url}?ajax=chapters&page={p}&pageSize=200"
+                data = http_get_json(ajax_url, timeout=12)
+                if data and isinstance(data, dict):
+                    return data.get("html", "")
+                return ""
+
+            with ThreadPoolExecutor(max_workers=min(8, total_pages)) as executor:
+                results = list(executor.map(fetch_chapter_page, pages_to_fetch))
+
+            combined_html = "".join(results)
+            if combined_html:
+                ajax_soup = BeautifulSoup(combined_html, "html.parser")
+                for a in ajax_soup.find_all("a", href=True):
+                    href = a["href"].strip()
+                    if "/chapter-" not in href:
+                        continue
+                    full_url = urljoin(self.base_url, href)
+                    if full_url in seen_urls:
+                        continue
+                    seen_urls.add(full_url)
+                    title = (a.get("title") or a.text).strip() or f"Chapter {len(chapters) + 1}"
+                    chapters.append(
+                        ChapterItem(
+                            index=len(chapters) + 1,
+                            title=title,
+                            url=full_url,
+                            novel_url=novel_url,
+                        )
+                    )
+                if chapters:
+                    return chapters
+
+        # 2. Fallback to static page links
+        chapter_anchors = soup.select("ul.ul-list5 li a, .m-newest2 ul li a, .m-newest1 ul li a")
+        if not chapter_anchors:
+            chapter_anchors = [a for a in soup.find_all("a", href=True) if "/chapter-" in a["href"]]
+
+        for idx, a in enumerate(chapter_anchors, start=1):
+            href = a["href"].strip()
+            full_url = urljoin(self.base_url, href)
+            if full_url in seen_urls:
+                continue
+            seen_urls.add(full_url)
+
+            title = (a.get("title") or a.text).strip()
+            if not title:
+                title = f"Chapter {idx}"
+
+            chapters.append(
+                ChapterItem(
+                    index=len(chapters) + 1,
+                    title=title,
+                    url=full_url,
+                    novel_url=novel_url,
+                )
+            )
+
+        # Some sites list newest first; if Chapter 1 is at the end, reverse it
+        if len(chapters) > 1 and "chapter 1" in chapters[-1].title.lower():
+            chapters.reverse()
+            for idx, ch in enumerate(chapters, start=1):
+                ch.index = idx
+
+        return chapters
+
+    def get_chapter_content(self, chapter_url: str) -> ChapterContent:
+        soup = http_get_soup(chapter_url, timeout=15)
+        if not soup:
+            raise RuntimeError(f"Failed to fetch chapter from {chapter_url}")
 
         # Chapter Title
         title_el = soup.select_one(".titles h1, h1.chapter-title, .title-con, h2")

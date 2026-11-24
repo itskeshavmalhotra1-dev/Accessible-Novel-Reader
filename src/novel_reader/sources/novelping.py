@@ -9,7 +9,6 @@ from typing import List, Optional
 from urllib.parse import quote_plus, urljoin
 
 from bs4 import BeautifulSoup
-import requests
 
 from novel_reader.sources.base import (
     BaseNovelSource,
@@ -18,6 +17,7 @@ from novel_reader.sources.base import (
     ChapterItem,
     NovelItem,
 )
+from novel_reader.utils.network import http_get, http_get_soup
 from novel_reader.utils.text import strip_html_tags
 
 DEFAULT_HEADERS = {
@@ -47,23 +47,19 @@ class NovelPingSource(BaseNovelSource):
             CategoryItem(name="Most Popular", url=f"{self.base_url}/sort/popular"),
             CategoryItem(name="Completed Novels", url=f"{self.base_url}/sort/complete"),
         ]
-        try:
-            resp = requests.get(self.base_url, headers=DEFAULT_HEADERS, timeout=10)
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                seen = {c.url for c in categories}
-                for a in soup.find_all("a", href=True):
-                    href = a["href"].strip()
-                    if "/novelping-genres/" in href:
-                        full_url = urljoin(self.base_url, href)
-                        name = a.text.strip()
-                        if not name:
-                            name = href.rstrip("/").split("/")[-1].replace("-", " ").title()
-                        if full_url not in seen and name:
-                            seen.add(full_url)
-                            categories.append(CategoryItem(name=name, url=full_url))
-        except Exception:
-            pass
+        soup = http_get_soup(self.base_url, timeout=12)
+        if soup:
+            seen = {c.url for c in categories}
+            for a in soup.find_all("a", href=True):
+                href = a["href"].strip()
+                if "/novelping-genres/" in href:
+                    full_url = urljoin(self.base_url, href)
+                    name = a.text.strip()
+                    if not name:
+                        name = href.rstrip("/").split("/")[-1].replace("-", " ").title()
+                    if full_url not in seen and name:
+                        seen.add(full_url)
+                        categories.append(CategoryItem(name=name, url=full_url))
         return categories
 
     def get_novels_by_category(self, category_url: str, page: int = 1) -> List[NovelItem]:
@@ -74,26 +70,20 @@ class NovelPingSource(BaseNovelSource):
         else:
             target_url = clean_url
 
-        try:
-            resp = requests.get(target_url, headers=DEFAULT_HEADERS, timeout=12)
-            if resp.status_code != 200:
-                return []
-            return self._parse_novel_list(resp.text)
-        except Exception:
+        html = http_get(target_url, timeout=15)
+        if not html:
             return []
+        return self._parse_novel_list(html)
 
     def search(self, query: str, page: int = 1) -> List[NovelItem]:
         encoded = quote_plus(query.strip())
         url = f"{self.base_url}/search?keyword={encoded}"
         if page > 1:
             url += f"&page={page}"
-        try:
-            resp = requests.get(url, headers=DEFAULT_HEADERS, timeout=12)
-            if resp.status_code != 200:
-                return []
-            return self._parse_novel_list(resp.text)
-        except Exception:
+        html = http_get(url, timeout=15)
+        if not html:
             return []
+        return self._parse_novel_list(html)
 
     def get_latest(self, page: int = 1) -> List[NovelItem]:
         return self.get_novels_by_category(f"{self.base_url}/sort/updates", page=page)
@@ -134,48 +124,47 @@ class NovelPingSource(BaseNovelSource):
         return items
 
     def get_chapters(self, novel_url: str) -> List[ChapterItem]:
-        try:
-            resp = requests.get(novel_url, headers=DEFAULT_HEADERS, timeout=15)
-            if resp.status_code != 200:
-                return []
-
-            soup = BeautifulSoup(resp.text, "html.parser")
-            chapters: List[ChapterItem] = []
-            seen = set()
-
-            for a in soup.find_all("a", href=True):
-                href = a["href"].strip()
-                if "/chapter" not in href or href.endswith("read") or "read now" in a.text.lower():
-                    continue
-
-                full_url = urljoin(self.base_url, href)
-                if full_url in seen or full_url == novel_url:
-                    continue
-                seen.add(full_url)
-
-                title = (a.get("title") or a.text).strip()
-                if not title:
-                    title = f"Chapter {len(chapters) + 1}"
-
-                chapters.append(
-                    ChapterItem(
-                        index=len(chapters) + 1,
-                        title=title,
-                        url=full_url,
-                        novel_url=novel_url,
-                    )
-                )
-
-            return chapters
-        except Exception:
+        soup = http_get_soup(novel_url, timeout=15)
+        if not soup:
             return []
 
-    def get_chapter_content(self, chapter_url: str) -> ChapterContent:
-        resp = requests.get(chapter_url, headers=DEFAULT_HEADERS, timeout=15)
-        if resp.status_code != 200:
-            raise RuntimeError(f"Failed to fetch chapter from {chapter_url} (HTTP {resp.status_code})")
+        chapters: List[ChapterItem] = []
+        seen = set()
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            if "/chapter" not in href or href.endswith("read") or "read now" in a.text.lower():
+                continue
+
+            full_url = urljoin(self.base_url, href)
+            if full_url in seen or full_url == novel_url:
+                continue
+            seen.add(full_url)
+
+            title_el = a.select_one(".chapter-title, .nchr-text")
+            if title_el and title_el.text.strip():
+                title = title_el.text.strip()
+            else:
+                title = (a.get("title") or a.text).strip()
+            title = re.sub(r"\s+\d+\s*$", "", title)
+            if not title:
+                title = f"Chapter {len(chapters) + 1}"
+
+            chapters.append(
+                ChapterItem(
+                    index=len(chapters) + 1,
+                    title=title,
+                    url=full_url,
+                    novel_url=novel_url,
+                )
+            )
+
+        return chapters
+
+    def get_chapter_content(self, chapter_url: str) -> ChapterContent:
+        soup = http_get_soup(chapter_url, timeout=15)
+        if not soup:
+            raise RuntimeError(f"Failed to fetch chapter from {chapter_url}")
 
         title_el = soup.select_one(".chapter-title, h1, h2, .titles")
         title = title_el.text.strip() if title_el else "Chapter"

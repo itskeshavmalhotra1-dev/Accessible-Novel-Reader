@@ -79,11 +79,9 @@ def test_freewebnovel_chapter_content_extraction() -> None:
         <a id="next_url" href="/novel/fantasy-tale/chapter-2">Next</a>
     </html>
     """
-    with patch("requests.get") as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.text = sample_html
-        mock_get.return_value = mock_resp
+    from bs4 import BeautifulSoup
+    with patch("novel_reader.sources.freewebnovel.http_get_soup") as mock_soup:
+        mock_soup.return_value = BeautifulSoup(sample_html, "html.parser")
 
         content = source.get_chapter_content("https://freewebnovel.com/novel/fantasy-tale/chapter-1")
         assert content.title == "Chapter 1: The Journey"
@@ -95,33 +93,27 @@ def test_freewebnovel_chapter_content_extraction() -> None:
 
 def test_freewebnovel_category_pagination() -> None:
     source = FreeWebNovelSource()
-    with patch("requests.get") as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.text = "<html></html>"
-        mock_get.return_value = mock_resp
+    with patch("novel_reader.sources.freewebnovel.http_get") as mock_http_get:
+        mock_http_get.return_value = "<html></html>"
 
         # Page 1
         source.get_novels_by_category("https://freewebnovel.com/genre/Action", page=1)
-        mock_get.assert_called_with("https://freewebnovel.com/genre/Action", headers=mock_get.call_args[1]["headers"], timeout=12)
+        mock_http_get.assert_called_with("https://freewebnovel.com/genre/Action", timeout=15)
 
         # Page 2
         source.get_novels_by_category("https://freewebnovel.com/genre/Action", page=2)
-        mock_get.assert_called_with("https://freewebnovel.com/genre/Action/2", headers=mock_get.call_args[1]["headers"], timeout=12)
+        mock_http_get.assert_called_with("https://freewebnovel.com/genre/Action/2", timeout=15)
 
 
 def test_novelfull_category_pagination() -> None:
     source = NovelFullSource()
-    with patch("requests.get") as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.text = "<html></html>"
-        mock_get.return_value = mock_resp
+    with patch("novel_reader.sources.novelfull.http_get") as mock_http_get:
+        mock_http_get.return_value = "<html></html>"
 
         # Page 1
         source.get_novels_by_category("https://novelfull.net/genre/Action", page=1)
-        mock_get.assert_called_with("https://novelfull.net/genre/Action", headers=mock_get.call_args[1]["headers"], timeout=12)
+        mock_http_get.assert_called_with("https://novelfull.net/genre/Action", timeout=15)
 
         # Page 2
         source.get_novels_by_category("https://novelfull.net/genre/Action", page=2)
-        mock_get.assert_called_with("https://novelfull.net/genre/Action?page=2", headers=mock_get.call_args[1]["headers"], timeout=12)
+        mock_http_get.assert_called_with("https://novelfull.net/genre/Action?page=2", timeout=15)

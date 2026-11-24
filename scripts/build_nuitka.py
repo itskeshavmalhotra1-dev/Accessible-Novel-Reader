@@ -127,21 +127,24 @@ def build() -> None:
 
     if TARGET_DIR.exists():
         shutil.rmtree(TARGET_DIR)
-    shutil.copytree(cand_dir, TARGET_DIR)
-    print(f"Synced build output to {TARGET_DIR}")
+    TARGET_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Copy screen reader DLLs into root of TARGET_DIR for guaranteed discovery
+    bin_dir = TARGET_DIR / "bin"
+    shutil.copytree(cand_dir, bin_dir)
+    print(f"Synced engine and libraries to subfolder: {bin_dir}")
+
+    # Copy screen reader DLLs into bin_dir for guaranteed discovery
     try:
         import accessible_output2
         ao2_lib = Path(accessible_output2.__file__).parent / "lib"
         if ao2_lib.exists():
             for dll in ao2_lib.glob("*.dll"):
-                shutil.copy2(dll, TARGET_DIR / dll.name)
-            target_ao2_lib = TARGET_DIR / "accessible_output2" / "lib"
+                shutil.copy2(dll, bin_dir / dll.name)
+            target_ao2_lib = bin_dir / "accessible_output2" / "lib"
             target_ao2_lib.mkdir(parents=True, exist_ok=True)
             for dll in ao2_lib.glob("*.dll"):
                 shutil.copy2(dll, target_ao2_lib / dll.name)
-            print("Successfully verified and bundled screen-reader DLLs.")
+            print("Successfully verified and bundled screen-reader DLLs into bin.")
     except Exception as e:
         print(f"Notice: Accessible DLL verification: {e}")
 
@@ -152,12 +155,34 @@ def build() -> None:
         curl_libs = site_packages / "curl_cffi.libs"
         if curl_libs.exists():
             for dll in curl_libs.glob("*.dll"):
-                shutil.copy2(dll, TARGET_DIR / dll.name)
-            print("Successfully verified and bundled curl-impersonate runtime DLLs.")
+                shutil.copy2(dll, bin_dir / dll.name)
+            print("Successfully verified and bundled curl-impersonate runtime DLLs into bin.")
     except Exception as e:
         print(f"Notice: Curl DLL verification: {e}")
 
-    # Copy documentation
+    # Compile native root GUI launcher (Zero console window, instant startup)
+    launcher_src = BASE_DIR / "scripts" / "Launcher.cs"
+    csc_path = Path(r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe")
+    launcher_dest = TARGET_DIR / "Accessible_Novel_Reader.exe"
+
+    if csc_path.exists() and launcher_src.exists():
+        compile_cmd = [
+            str(csc_path),
+            "/target:winexe",
+            "/optimize+",
+            f"/out:{launcher_dest}",
+            str(launcher_src),
+        ]
+        res = subprocess.run(compile_cmd, capture_output=True, text=True)
+        if res.returncode == 0:
+            print(f"Successfully compiled native root launcher to {launcher_dest}")
+        else:
+            print(f"Launcher compilation warning: {res.stderr}")
+    else:
+        # Fallback: copy executable directly if csc not available
+        shutil.copy2(bin_dir / "Accessible_Novel_Reader.exe", launcher_dest)
+
+    # Copy documentation to root of TARGET_DIR
     readme = BASE_DIR / "README.md"
     if readme.exists():
         shutil.copy2(readme, TARGET_DIR / "README.md")
