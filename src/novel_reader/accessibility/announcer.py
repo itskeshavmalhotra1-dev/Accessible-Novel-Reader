@@ -52,8 +52,12 @@ class ScreenReaderAnnouncer:
             return
 
         # Emit to stdout for CLI / test debugging
-        sys.stdout.write(f"\n[Announcement] {cleaned}\n")
-        sys.stdout.flush()
+        if sys.stdout and hasattr(sys.stdout, "write"):
+            try:
+                sys.stdout.write(f"\n[Announcement] {cleaned}\n")
+                sys.stdout.flush()
+            except Exception:
+                pass
 
         if self._speech:
             def _async_output() -> None:

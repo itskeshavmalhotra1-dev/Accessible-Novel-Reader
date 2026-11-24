@@ -23,7 +23,7 @@ import requests
 
 from novel_reader.accessibility.announcer import get_default_announcer
 
-CURRENT_VERSION = "26.0.1"
+CURRENT_VERSION = "26.0.2"
 DEFAULT_GITHUB_REPO = os.environ.get("NOVEL_READER_REPO", "itskeshavmalhotra1-dev/Accessible-Novel-Reader")
 USER_AGENT = f"AccessibleNovelReader-Updater/{CURRENT_VERSION}"
 
@@ -208,14 +208,24 @@ def apply_update(
         for d in os.listdir(temp_extract)
         if os.path.isdir(os.path.join(temp_extract, d))
     ]
-    src_folder = (
-        subdirs[0]
-        if len(subdirs) == 1 and os.path.exists(os.path.join(subdirs[0], "main.py"))
-        else temp_extract
-    )
+    src_folder = temp_extract
+    if len(subdirs) == 1:
+        sub = subdirs[0]
+        if (
+            os.path.exists(os.path.join(sub, "main.py"))
+            or os.path.exists(os.path.join(sub, "Accessible_Novel_Reader.exe"))
+            or os.path.exists(os.path.join(sub, "bin"))
+        ):
+            src_folder = sub
 
     target_dir = paths["install_dir"]
-    restart_cmd = 'start "" pythonw main.py'
+    if paths.get("mode") == "standalone":
+        launcher_exe = os.path.join(target_dir, "Accessible_Novel_Reader.exe")
+        if not os.path.exists(launcher_exe):
+            launcher_exe = os.path.join(target_dir, paths.get("exe_name", "Accessible_Novel_Reader.exe"))
+        restart_cmd = f'start "" "{launcher_exe}"'
+    else:
+        restart_cmd = 'start "" pythonw main.py'
     restart_dir = paths["install_dir"]
 
     bat_path = os.path.join(tempfile.gettempdir(), "apply_novel_reader_update.bat")

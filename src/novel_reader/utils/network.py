@@ -34,32 +34,36 @@ except ImportError:
     curl_requests = None
     HAS_CURL_CFFI = False
 
+import json
 import requests as std_requests
 
-_CURL_SESSION: Optional[Any] = None
-_STD_SESSION: Optional[std_requests.Session] = None
-_SESSION_LOCK = threading.Lock()
+# Thread-local storage guarantees each thread has its own isolated libcurl handle
+# eliminating concurrent multi-handle deadlocks and socket race conditions on Windows.
+_THREAD_LOCAL = threading.local()
 
 
 def get_curl_session() -> Optional[Any]:
-    global _CURL_SESSION
-    if _CURL_SESSION is None and HAS_CURL_CFFI and curl_requests:
-        with _SESSION_LOCK:
-            if _CURL_SESSION is None:
-                try:
-                    _CURL_SESSION = curl_requests.Session(impersonate="chrome124")
-                except Exception as e:
-                    logger.debug("Failed to create curl_cffi session: %s", e)
-    return _CURL_SESSION
+    """Return a thread-isolated curl_cffi session with Chrome 124 TLS fingerprint."""
+    if not (HAS_CURL_CFFI and curl_requests):
+        return None
+    session = getattr(_THREAD_LOCAL, "curl_session", None)
+    if session is None:
+        try:
+            session = curl_requests.Session(impersonate="chrome124")
+            _THREAD_LOCAL.curl_session = session
+        except Exception as e:
+            logger.debug("Failed to create thread-local curl_cffi session: %s", e)
+            return None
+    return session
 
 
 def get_std_session() -> std_requests.Session:
-    global _STD_SESSION
-    if _STD_SESSION is None:
-        with _SESSION_LOCK:
-            if _STD_SESSION is None:
-                _STD_SESSION = std_requests.Session()
-    return _STD_SESSION
+    """Return a thread-isolated standard requests session."""
+    session = getattr(_THREAD_LOCAL, "std_session", None)
+    if session is None:
+        session = std_requests.Session()
+        _THREAD_LOCAL.std_session = session
+    return session
 
 
 def http_get(
@@ -68,14 +72,14 @@ def http_get(
     timeout: int = 15,
     extra_headers: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
-    """Fetch URL text with anti-bot evasion, persistent session, and fallback."""
+    """Fetch URL text with anti-bot evasion, thread-safe session, and fallback."""
     req_headers = dict(DEFAULT_HEADERS)
     if headers:
         req_headers.update(headers)
     if extra_headers:
         req_headers.update(extra_headers)
 
-    # 1. Try curl_cffi first with Chrome 124 session
+    # 1. Try thread-isolated curl_cffi first with Chrome 124 session
     session = get_curl_session()
     if session:
         for attempt in range(2):
@@ -129,9 +133,9 @@ def http_get_soup(
 def http_get_json(
     url: str,
     headers: Optional[Dict[str, str]] = None,
-    timeout: int = 15,
+    timeout: int = 10,
 ) -> Optional[Any]:
-    """Fetch URL and parse as JSON."""
+    """Fetch URL and parse as JSON with anti-bot evasion and thread-safe session."""
     req_headers = dict(DEFAULT_HEADERS)
     req_headers["X-Requested-With"] = "XMLHttpRequest"
     req_headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
@@ -146,11 +150,16 @@ def http_get_json(
             try:
                 resp = session.get(url, headers=req_headers, timeout=timeout)
                 if resp.status_code == 200:
-                    return resp.json()
+                    try:
+                        return resp.json()
+                    except (json.JSONDecodeError, ValueError):
+                        return None
                 elif resp.status_code == 429:
                     logger.warning("curl_cffi json HTTP 429 for %s, retrying after 1.5s", url)
                     time.sleep(1.5)
                     continue
+                else:
+                    break
             except Exception as e:
                 logger.debug("curl_cffi json failed for %s: %s", url, e)
                 break
@@ -160,10 +169,15 @@ def http_get_json(
         try:
             resp = std_s.get(url, headers=req_headers, timeout=timeout)
             if resp.status_code == 200:
-                return resp.json()
+                try:
+                    return resp.json()
+                except (json.JSONDecodeError, ValueError):
+                    return None
             elif resp.status_code == 429:
                 time.sleep(1.5)
                 continue
+            else:
+                break
         except Exception as e:
             logger.warning("std_requests json failed for %s: %s", url, e)
             break

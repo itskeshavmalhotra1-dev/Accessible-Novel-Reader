@@ -717,10 +717,11 @@ class NovelReaderFrame(wx.Frame):
         if novels:
             self.list_novels.SetSelection(0)
             self.btn_load_chapters.Enable(True)
-            self.list_chapters.Set(["Press Enter on a novel to load its chapters"])
-            self.btn_jump_chapter.Disable()
-            self.btn_sort_chapters.Disable()
-            self.choice_chapter_range.Hide()
+            if not self._loading_novel_url:
+                self.list_chapters.Set(["Press Enter on a novel to load its chapters"])
+                self.btn_jump_chapter.Disable()
+                self.btn_sort_chapters.Disable()
+                self.choice_chapter_range.Hide()
             self.Layout()
             if self.current_page > 1:
                 self.announcer.speak(f"Page {self.current_page} loaded. {len(novels)} novels.")
@@ -837,35 +838,41 @@ class NovelReaderFrame(wx.Frame):
         self._loading_novel_url = None
         self.btn_load_chapters.Enable(True)
         self.btn_load_chapters.SetLabel("Load Chapters for Selected Novel (Enter)")
-        self.all_chapters = list(chapters)
-        self.current_range_idx = 0
-        total = len(self.all_chapters)
-        title = self.current_novel.title if self.current_novel else "Novel"
 
-        if not chapters:
-            self.chapters = []
-            self.list_chapters.Set([f"No chapters found for '{title}'. Try switching source or reloading."])
-            self.choice_chapter_range.Hide()
-            self.btn_jump_chapter.Disable()
-            self.btn_sort_chapters.Disable()
-            self.Layout()
-            self.announcer.speak(f"No chapters found for {title}.")
-            return
+        try:
+            self.all_chapters = list(chapters)
+            self.current_range_idx = 0
+            total = len(self.all_chapters)
+            title = self.current_novel.title if self.current_novel else "Novel"
 
-        self.btn_jump_chapter.Enable(True)
-        self.btn_sort_chapters.Enable(True)
+            if not chapters:
+                self.chapters = []
+                self.list_chapters.Set([f"No chapters found for '{title}'. Try switching source or reloading."])
+                self.choice_chapter_range.Hide()
+                self.btn_jump_chapter.Disable()
+                self.btn_sort_chapters.Disable()
+                self.Layout()
+                self.announcer.speak(f"No chapters found for {title}.")
+                return
 
-        if not self.chapter_sort_asc:
-            self.all_chapters.reverse()
+            self.btn_jump_chapter.Enable(True)
+            self.btn_sort_chapters.Enable(True)
 
-        self._rebuild_chapter_ranges(select_bucket=0, select_item=0)
+            if not self.chapter_sort_asc:
+                self.all_chapters.reverse()
 
-        msg = f"{total} chapters loaded for {title}."
-        self.SetStatusText(msg, 0)
-        if total > self.chapter_range_size:
-            self.announcer.speak(f"{total} chapters loaded. Viewing chapters 1 to {min(total, self.chapter_range_size)}.")
-        else:
-            self.announcer.speak(msg)
+            self._rebuild_chapter_ranges(select_bucket=0, select_item=0)
+
+            msg = f"{total} chapters loaded for {title}."
+            self.SetStatusText(msg, 0)
+            if total > self.chapter_range_size:
+                self.announcer.speak(f"{total} chapters loaded. Viewing chapters 1 to {min(total, self.chapter_range_size)}.")
+            else:
+                self.announcer.speak(msg)
+        except Exception as err:
+            logging.error(f"Error rendering chapter list: {err}", exc_info=True)
+            self.list_chapters.Set([f"Error displaying chapters: {err}"])
+            self.announcer.speak("Error displaying chapters.")
 
     def _rebuild_chapter_ranges(self, select_bucket: int = 0, select_item: int = 0) -> None:
         total = len(self.all_chapters)

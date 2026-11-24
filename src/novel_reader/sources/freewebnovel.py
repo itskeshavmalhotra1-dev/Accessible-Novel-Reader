@@ -4,7 +4,6 @@ Scraper for freewebnovel.com.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import re
 import time
 from typing import List, Optional
@@ -175,22 +174,18 @@ class FreeWebNovelSource(BaseNovelSource):
         if total_pages > 1:
             clean_novel_url = novel_url.split("?")[0].rstrip("/")
             pages_to_fetch = list(range(1, total_pages + 1))
+            combined_html = ""
 
-            def fetch_chapter_page(p: int) -> str:
+            for p in pages_to_fetch:
                 ajax_url = f"{clean_novel_url}?ajax=chapters&page={p}&pageSize=200"
                 headers = {"Referer": novel_url}
-                data = http_get_json(ajax_url, headers=headers, timeout=15)
+                data = http_get_json(ajax_url, headers=headers, timeout=8)
                 if not data:
-                    time.sleep(0.5)
-                    data = http_get_json(ajax_url, headers=headers, timeout=15)
+                    time.sleep(0.3)
+                    data = http_get_json(ajax_url, headers=headers, timeout=8)
                 if data and isinstance(data, dict):
-                    return data.get("html", "")
-                return ""
+                    combined_html += data.get("html", "")
 
-            with ThreadPoolExecutor(max_workers=min(2, total_pages)) as executor:
-                results = list(executor.map(fetch_chapter_page, pages_to_fetch))
-
-            combined_html = "".join(results)
             if combined_html:
                 ajax_soup = BeautifulSoup(combined_html, "html.parser")
                 for a in ajax_soup.find_all("a", href=True):
@@ -214,7 +209,7 @@ class FreeWebNovelSource(BaseNovelSource):
                     return chapters
 
         # 2. Fallback to static page links
-        chapter_anchors = soup.select("ul.ul-list5 li a, .m-newest2 ul li a, .m-newest1 ul li a")
+        chapter_anchors = soup.select("#idData a, ul.ul-list5 li a, .m-newest2 ul li a, .m-newest1 ul li a")
         if not chapter_anchors:
             chapter_anchors = [a for a in soup.find_all("a", href=True) if "/chapter-" in a["href"]]
 
