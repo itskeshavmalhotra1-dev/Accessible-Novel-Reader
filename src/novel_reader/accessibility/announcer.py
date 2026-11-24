@@ -37,7 +37,7 @@ class ScreenReaderAnnouncer:
 
     def __init__(self) -> None:
         self._speech = _SPEECH_ENGINE
-        self._sound_enabled = True
+        self._sound_enabled = False
 
     def speak(self, text: str, interrupt: bool = True) -> None:
         """
@@ -72,8 +72,8 @@ class ScreenReaderAnnouncer:
 
     def play_earcon(self, event_type: str) -> None:
         """
-        Play crisp acoustic feedback earcons without visual disruption.
-        event_type: 'start', 'complete', 'error', 'click', 'change'
+        Acoustic feedback earcons. Silenced by default for a quiet, non-disruptive
+        screen reader experience.
         """
         if not self._sound_enabled or not winsound:
             return

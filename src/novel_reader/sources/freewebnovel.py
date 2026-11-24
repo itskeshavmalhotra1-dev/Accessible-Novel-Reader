@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import re
+import time
 from typing import List, Optional
 from urllib.parse import quote_plus, urljoin
 
@@ -155,14 +156,21 @@ class FreeWebNovelSource(BaseNovelSource):
         chapters: List[ChapterItem] = []
         seen_urls = set()
 
-        # 1. Check if indexListPage has totalPage pagination (e.g. data-total-page="17")
+        # 1. Check if indexListPage has total chapters or pagination
         page_root = soup.select_one("#indexListPage")
         total_pages = 1
-        if page_root and page_root.get("data-total-page"):
-            try:
-                total_pages = int(page_root.get("data-total-page"))
-            except ValueError:
-                total_pages = 1
+        if page_root:
+            if page_root.get("data-total-chapters"):
+                try:
+                    tot_ch = int(page_root.get("data-total-chapters"))
+                    total_pages = max(1, (tot_ch + 199) // 200)
+                except ValueError:
+                    total_pages = 1
+            elif page_root.get("data-total-page"):
+                try:
+                    total_pages = int(page_root.get("data-total-page"))
+                except ValueError:
+                    total_pages = 1
 
         if total_pages > 1:
             clean_novel_url = novel_url.split("?")[0].rstrip("/")
@@ -171,11 +179,14 @@ class FreeWebNovelSource(BaseNovelSource):
             def fetch_chapter_page(p: int) -> str:
                 ajax_url = f"{clean_novel_url}?ajax=chapters&page={p}&pageSize=200"
                 data = http_get_json(ajax_url, timeout=12)
+                if not data:
+                    time.sleep(0.3)
+                    data = http_get_json(ajax_url, timeout=15)
                 if data and isinstance(data, dict):
                     return data.get("html", "")
                 return ""
 
-            with ThreadPoolExecutor(max_workers=min(8, total_pages)) as executor:
+            with ThreadPoolExecutor(max_workers=min(4, total_pages)) as executor:
                 results = list(executor.map(fetch_chapter_page, pages_to_fetch))
 
             combined_html = "".join(results)

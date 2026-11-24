@@ -7,6 +7,7 @@ falling back gracefully to standard requests if needed.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, Optional
 from bs4 import BeautifulSoup
 
@@ -57,6 +58,17 @@ def http_get(
             )
             if resp.status_code == 200:
                 return resp.text
+            elif resp.status_code == 429:
+                logger.warning("curl_cffi HTTP 429 (Rate Limited) for %s, retrying after 1.2s", url)
+                time.sleep(1.2)
+                resp = curl_requests.get(
+                    url,
+                    headers=req_headers,
+                    impersonate="chrome124",
+                    timeout=timeout,
+                )
+                if resp.status_code == 200:
+                    return resp.text
             elif resp.status_code != 404:
                 logger.warning("curl_cffi HTTP %d for %s", resp.status_code, url)
         except Exception as e:
@@ -67,6 +79,11 @@ def http_get(
         resp = std_requests.get(url, headers=req_headers, timeout=timeout)
         if resp.status_code == 200:
             return resp.text
+        elif resp.status_code == 429:
+            time.sleep(1.2)
+            resp = std_requests.get(url, headers=req_headers, timeout=timeout)
+            if resp.status_code == 200:
+                return resp.text
         logger.warning("std_requests HTTP %d for %s", resp.status_code, url)
     except Exception as e:
         logger.warning("std_requests failed for %s: %s", url, e)
@@ -107,6 +124,16 @@ def http_get_json(
             )
             if resp.status_code == 200:
                 return resp.json()
+            elif resp.status_code == 429:
+                time.sleep(1.2)
+                resp = curl_requests.get(
+                    url,
+                    headers=req_headers,
+                    impersonate="chrome124",
+                    timeout=timeout,
+                )
+                if resp.status_code == 200:
+                    return resp.json()
         except Exception as e:
             logger.debug("curl_cffi json failed for %s: %s", url, e)
 
@@ -114,6 +141,11 @@ def http_get_json(
         resp = std_requests.get(url, headers=req_headers, timeout=timeout)
         if resp.status_code == 200:
             return resp.json()
+        elif resp.status_code == 429:
+            time.sleep(1.2)
+            resp = std_requests.get(url, headers=req_headers, timeout=timeout)
+            if resp.status_code == 200:
+                return resp.json()
     except Exception as e:
         logger.warning("std_requests json failed for %s: %s", url, e)
 

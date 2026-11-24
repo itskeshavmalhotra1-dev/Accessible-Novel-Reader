@@ -297,7 +297,6 @@ class NovelReaderFrame(wx.Frame):
         self.list_categories.Bind(wx.EVT_LISTBOX_DCLICK, self.on_category_selected)
         self.list_categories.Bind(wx.EVT_KEY_DOWN, self._on_category_key_down)
 
-        self.list_novels.Bind(wx.EVT_LISTBOX, self.on_novel_selected)
         self.list_novels.Bind(wx.EVT_LISTBOX_DCLICK, self.on_novel_selected)
         self.list_novels.Bind(wx.EVT_KEY_DOWN, self._on_novel_key_down)
 
@@ -460,7 +459,6 @@ class NovelReaderFrame(wx.Frame):
             return
 
         self.SetStatusText(f"Loading novels in {cat.name} (Page {page})...", 0)
-        self.announcer.play_earcon("start")
 
         def worker() -> None:
             try:
@@ -507,7 +505,6 @@ class NovelReaderFrame(wx.Frame):
             return
 
         self.SetStatusText(f"Searching for '{query}' on {source.name} (Page {page})...", 0)
-        self.announcer.play_earcon("start")
 
         def worker() -> None:
             try:
@@ -546,7 +543,6 @@ class NovelReaderFrame(wx.Frame):
         self.btn_next_page.Enable(len(novels) > 0)
 
         self.SetStatusText(message, 0)
-        self.announcer.play_earcon("complete")
 
         # Select first novel and fetch its chapters
         if novels:
@@ -612,7 +608,7 @@ class NovelReaderFrame(wx.Frame):
             return
 
         self.SetStatusText(f"Loading chapters for '{novel.title}'...", 0)
-        self.announcer.play_earcon("start")
+        self.announcer.speak(f"Loading chapters for {novel.title}...")
 
         def worker() -> None:
             try:
@@ -634,6 +630,7 @@ class NovelReaderFrame(wx.Frame):
         self.all_chapters = list(chapters)
         self.current_range_idx = 0
         total = len(self.all_chapters)
+        title = self.current_novel.title if self.current_novel else "Novel"
 
         if not chapters:
             self.chapters = []
@@ -642,6 +639,7 @@ class NovelReaderFrame(wx.Frame):
             self.btn_jump_chapter.Disable()
             self.btn_sort_chapters.Disable()
             self.Layout()
+            self.announcer.speak(f"No chapters found for {title}.")
             return
 
         self.btn_jump_chapter.Enable(True)
@@ -652,12 +650,12 @@ class NovelReaderFrame(wx.Frame):
 
         self._rebuild_chapter_ranges(select_bucket=0, select_item=0)
 
-        title = self.current_novel.title if self.current_novel else "Novel"
         msg = f"{total} chapters loaded for {title}."
         self.SetStatusText(msg, 0)
-        self.announcer.play_earcon("complete")
         if total > self.chapter_range_size:
             self.announcer.speak(f"{total} chapters loaded. Viewing chapters 1 to {min(total, self.chapter_range_size)}.")
+        else:
+            self.announcer.speak(msg)
 
     def _rebuild_chapter_ranges(self, select_bucket: int = 0, select_item: int = 0) -> None:
         total = len(self.all_chapters)

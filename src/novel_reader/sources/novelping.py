@@ -131,6 +131,40 @@ class NovelPingSource(BaseNovelSource):
         chapters: List[ChapterItem] = []
         seen = set()
 
+        # 1. Try AJAX chapter-option for instant full catalog (all 400-3000+ chapters in 1 fast call)
+        novel_id = None
+        el_id = soup.select_one("[data-novel-id]")
+        if el_id and el_id.get("data-novel-id"):
+            novel_id = el_id.get("data-novel-id").strip()
+        if not novel_id:
+            novel_id = novel_url.rstrip("/").split("/")[-1]
+
+        if novel_id:
+            ajax_url = f"{self.base_url}/ajax/chapter-option?novelId={novel_id}"
+            ajax_soup = http_get_soup(ajax_url, timeout=15)
+            if ajax_soup:
+                options = ajax_soup.find_all("option")
+                for idx, opt in enumerate(options, start=1):
+                    val = opt.get("value", "").strip()
+                    if not val:
+                        continue
+                    full_url = urljoin(self.base_url, val)
+                    if full_url in seen:
+                        continue
+                    seen.add(full_url)
+                    title = opt.text.strip() or f"Chapter {idx}"
+                    chapters.append(
+                        ChapterItem(
+                            index=idx,
+                            title=title,
+                            url=full_url,
+                            novel_url=novel_url,
+                        )
+                    )
+                if chapters:
+                    return chapters
+
+        # 2. Fallback to parsing embedded chapter links on the page
         for a in soup.find_all("a", href=True):
             href = a["href"].strip()
             if "/chapter" not in href or href.endswith("read") or "read now" in a.text.lower():
