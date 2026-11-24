@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import threading
+import time
 from typing import Dict, List, Optional
 import wx
 
@@ -274,7 +275,7 @@ class NovelReaderFrame(wx.Frame):
         # Column 1 (Left): Categories / Genres
         col1_sizer = wx.BoxSizer(wx.VERTICAL)
         lbl_cats = wx.StaticText(panel, label="Categories:")
-        self.list_categories = wx.ListBox(panel, style=wx.LB_SINGLE)
+        self.list_categories = wx.ListBox(panel, style=wx.LB_SINGLE | wx.WANTS_CHARS)
         self.list_categories.SetName("Categories")
         self.list_categories.Set(["Loading categories..."])
         col1_sizer.Add(lbl_cats, 0, wx.BOTTOM, 4)
@@ -285,9 +286,13 @@ class NovelReaderFrame(wx.Frame):
         col2_sizer = wx.BoxSizer(wx.VERTICAL)
 
         lbl_novels = wx.StaticText(panel, label="Novels:")
-        self.list_novels = wx.ListBox(panel, style=wx.LB_SINGLE)
+        self.list_novels = wx.ListBox(panel, style=wx.LB_SINGLE | wx.WANTS_CHARS)
         self.list_novels.SetName("Novels")
         self.list_novels.Set(["Select a category to view novels"])
+
+        self.btn_load_chapters = wx.Button(panel, label="Load Chapters for Selected Novel (Enter)")
+        self.btn_load_chapters.SetName("Load Chapters for Selected Novel (Enter)")
+        self.btn_load_chapters.Disable()
 
         # Pagination Controls Bar (matches Downloader - Python)
         page_sizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -326,7 +331,7 @@ class NovelReaderFrame(wx.Frame):
         chap_header_sizer.Add(self.btn_jump_chapter, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
         chap_header_sizer.Add(self.btn_sort_chapters, 0, wx.ALIGN_CENTER_VERTICAL)
 
-        self.list_chapters = wx.ListBox(panel, style=wx.LB_SINGLE)
+        self.list_chapters = wx.ListBox(panel, style=wx.LB_SINGLE | wx.WANTS_CHARS)
         self.list_chapters.SetName("Chapters")
         self.list_chapters.Set(["Select a novel to view chapters"])
 
@@ -335,6 +340,7 @@ class NovelReaderFrame(wx.Frame):
 
         col2_sizer.Add(lbl_novels, 0, wx.BOTTOM, 4)
         col2_sizer.Add(self.list_novels, 1, wx.EXPAND | wx.BOTTOM, 6)
+        col2_sizer.Add(self.btn_load_chapters, 0, wx.EXPAND | wx.BOTTOM, 6)
         col2_sizer.Add(page_sizer, 0, wx.EXPAND | wx.BOTTOM, 8)
         col2_sizer.Add(chap_header_sizer, 0, wx.EXPAND | wx.BOTTOM, 4)
         col2_sizer.Add(self.list_chapters, 1, wx.EXPAND | wx.BOTTOM, 8)
@@ -407,6 +413,7 @@ class NovelReaderFrame(wx.Frame):
 
     def _bind_events(self) -> None:
         self.Bind(wx.EVT_SIZE, self._on_resize)
+        self.Bind(wx.EVT_CHAR_HOOK, self._on_char_hook)
         self.choice_source.Bind(wx.EVT_CHOICE, self.on_source_changed)
         self.btn_search.Bind(wx.EVT_BUTTON, self.on_search)
         self.txt_search.Bind(wx.EVT_TEXT_ENTER, self.on_search)
@@ -420,6 +427,7 @@ class NovelReaderFrame(wx.Frame):
 
         self.list_novels.Bind(wx.EVT_LISTBOX_DCLICK, self.on_novel_selected)
         self.list_novels.Bind(wx.EVT_KEY_DOWN, self._on_novel_key_down)
+        self.btn_load_chapters.Bind(wx.EVT_BUTTON, self.on_novel_selected)
 
         self.list_chapters.Bind(wx.EVT_LISTBOX_DCLICK, self.on_chapter_selected)
         self.list_chapters.Bind(wx.EVT_KEY_DOWN, self._on_chapter_key_down)
@@ -462,6 +470,21 @@ class NovelReaderFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_save_bookmark, id=ID_HOTKEY_BOOKMARK)
         self.Bind(wx.EVT_MENU, self.on_update_bookmark, id=ID_HOTKEY_UPDATE_BOOKMARK)
         self.Bind(wx.EVT_MENU, self.on_load_bookmark, id=ID_HOTKEY_LOAD_BOOKMARK)
+
+    def _on_char_hook(self, event: wx.KeyEvent) -> None:
+        key = event.GetKeyCode()
+        if key in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
+            focused = self.FindFocus()
+            if focused == self.list_novels:
+                self.on_novel_selected(None)
+                return
+            elif focused == self.list_categories:
+                self.on_category_selected(None)
+                return
+            elif focused == self.list_chapters:
+                self.on_chapter_selected(None)
+                return
+        event.Skip()
 
     def _on_resize(self, event: wx.SizeEvent) -> None:
         self.Layout()
@@ -565,7 +588,13 @@ class NovelReaderFrame(wx.Frame):
 
     def on_category_selected(self, event: Optional[wx.Event]) -> None:
         idx = self.list_categories.GetSelection()
-        if idx == wx.NOT_FOUND or idx >= len(self.categories):
+        if idx == wx.NOT_FOUND or idx < 0:
+            if self.categories:
+                idx = 0
+                self.list_categories.SetSelection(0)
+            else:
+                return
+        if idx >= len(self.categories):
             return
 
         cat = self.categories[idx]
@@ -677,6 +706,7 @@ class NovelReaderFrame(wx.Frame):
         # Set novel selection; strictly do NOT fetch chapters until user presses Enter
         if novels:
             self.list_novels.SetSelection(0)
+            self.btn_load_chapters.Enable(True)
             self.list_chapters.Set(["Press Enter on a novel to load its chapters"])
             self.btn_jump_chapter.Disable()
             self.btn_sort_chapters.Disable()
@@ -685,6 +715,7 @@ class NovelReaderFrame(wx.Frame):
             if self.current_page > 1:
                 self.announcer.speak(f"Page {self.current_page} loaded. {len(novels)} novels.")
         else:
+            self.btn_load_chapters.Disable()
             self.list_chapters.Set(["No novels found in this category"])
             self.btn_jump_chapter.Disable()
             self.btn_sort_chapters.Disable()
@@ -725,7 +756,13 @@ class NovelReaderFrame(wx.Frame):
 
     def on_novel_selected(self, event: Optional[wx.Event]) -> None:
         idx = self.list_novels.GetSelection()
-        if idx == wx.NOT_FOUND or idx >= len(self.novels):
+        if idx == wx.NOT_FOUND or idx < 0:
+            if self.novels:
+                idx = 0
+                self.list_novels.SetSelection(0)
+            else:
+                return
+        if idx >= len(self.novels):
             return
 
         novel = self.novels[idx]
@@ -794,6 +831,9 @@ class NovelReaderFrame(wx.Frame):
             self.announcer.speak(f"{total} chapters loaded. Viewing chapters 1 to {min(total, self.chapter_range_size)}.")
         else:
             self.announcer.speak(msg)
+
+        # Move focus directly to chapters list for screen reader announcement and quick browsing
+        self.list_chapters.SetFocus()
 
     def _rebuild_chapter_ranges(self, select_bucket: int = 0, select_item: int = 0) -> None:
         total = len(self.all_chapters)
@@ -942,7 +982,14 @@ class NovelReaderFrame(wx.Frame):
 
     def on_chapter_selected(self, event: Optional[wx.Event]) -> None:
         idx = self.list_chapters.GetSelection()
-        if idx == wx.NOT_FOUND or idx >= len(self.chapters):
+        if idx == wx.NOT_FOUND or idx < 0:
+            if self.chapters:
+                idx = 0
+                self.list_chapters.SetSelection(0)
+            else:
+                self.SetStatusText("Please select a chapter first.", 0)
+                return
+        if idx >= len(self.chapters):
             self.SetStatusText("Please select a chapter first.", 0)
             return
 

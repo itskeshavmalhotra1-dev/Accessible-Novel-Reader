@@ -292,3 +292,52 @@ def test_gui_bookmark_save_update_load_flow() -> None:
 
     frame.Destroy()
     app.Destroy()
+
+
+def test_enter_key_and_load_button_chapter_loading() -> None:
+    app = wx.App(False)
+    frame = NovelReaderFrame()
+    mock_src = MockNovelSource()
+    frame.current_source = mock_src
+
+    novels = mock_src.get_novels_by_category("", 1)
+    frame._novel_token = 1
+    frame._update_novel_list(novels, "2 novels loaded", 1)
+
+    # 1. Strictly chapters should NOT be loaded until Enter or Load button is activated
+    assert frame.list_chapters.GetString(0) == "Press Enter on a novel to load its chapters"
+    assert frame.btn_load_chapters.IsEnabled()
+
+    # 2. Test button activation
+    frame.on_novel_selected(None)
+    # Mock source has chapters
+    chaps = mock_src.get_chapters(novels[0].url)
+    frame._chap_token = 1
+    frame._update_chapter_list(chaps, 1)
+
+    assert len(frame.chapters) == 2
+    assert frame.chapters[0].title == "Chapter 1: Awaken"
+
+    # 3. Test EVT_CHAR_HOOK with Return key when list_novels has focus
+    frame.list_novels.SetFocus()
+    called = []
+    original_fetch = frame._fetch_chapters_for_novel
+    frame._fetch_chapters_for_novel = lambda n: called.append(n.title)
+
+    hook_evt = wx.KeyEvent(wx.wxEVT_CHAR_HOOK)
+    hook_evt.SetKeyCode(wx.WXK_RETURN)
+    frame._on_char_hook(hook_evt)
+
+    assert len(called) == 1
+    assert called[0] == "Sword God"
+
+    # 4. Test fallback to index 0 if GetSelection() is NOT_FOUND
+    frame.list_novels.SetSelection(wx.NOT_FOUND)
+    called.clear()
+    frame._on_char_hook(hook_evt)
+    assert len(called) == 1
+    assert called[0] == "Sword God"
+
+    frame._fetch_chapters_for_novel = original_fetch
+    frame.Destroy()
+    app.Destroy()
