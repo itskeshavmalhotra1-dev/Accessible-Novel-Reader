@@ -252,3 +252,43 @@ def test_smart_chapter_bucketing_and_boundary_crossover():
 
     frame.Destroy()
     app.Destroy()
+
+
+def test_gui_bookmark_save_update_load_flow() -> None:
+    app = wx.App(False)
+    frame = NovelReaderFrame()
+    mock_src = MockNovelSource()
+    frame.current_source = mock_src
+
+    # 1. When no chapter is open, bookmark buttons handle gracefully without errors
+    frame.on_save_bookmark(None)
+    frame.on_update_bookmark(None)
+
+    # 2. Simulate opening Chapter 1
+    novel = NovelItem(id="n1", title="Sword God", url="http://mock.test/novel/sword-god", source_name=mock_src.name)
+    ch1 = ChapterItem(index=1, title="Chapter 1: Awaken", url="http://mock.test/novel/sword-god/ch1")
+    frame.current_novel = novel
+    frame.current_chapter = ch1
+    frame._load_chapter_by_url(ch1.url)
+
+    # 3. Save bookmark
+    frame.on_save_bookmark(None)
+    bms = frame.db.list_novel_bookmarks()
+    assert any(b["novel_title"] == "Sword God" and b["chapter_index"] == 1 for b in bms)
+
+    # 4. Advance to Chapter 2 and Update Bookmark (must update existing without duplicates)
+    ch2 = ChapterItem(index=2, title="Chapter 2: Training", url="http://mock.test/novel/sword-god/ch2")
+    frame.current_chapter = ch2
+    frame._load_chapter_by_url(ch2.url)
+    frame.on_update_bookmark(None)
+
+    bms2 = frame.db.list_novel_bookmarks()
+    sword_god_bms = [b for b in bms2 if b["novel_title"] == "Sword God"]
+    assert len(sword_god_bms) == 1
+    assert sword_god_bms[0]["chapter_index"] == 2
+
+    # Cleanup test bookmark
+    frame.db.delete_novel_bookmark(sword_god_bms[0]["id"])
+
+    frame.Destroy()
+    app.Destroy()

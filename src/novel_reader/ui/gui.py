@@ -16,6 +16,7 @@ from typing import Dict, List, Optional
 import wx
 
 from novel_reader.accessibility.announcer import get_default_announcer
+from novel_reader.library.database import Database
 from novel_reader.sources.base import (
     BaseNovelSource,
     CategoryItem,
@@ -51,6 +52,9 @@ WELCOME_TEXT = (
     "- PageDown: Next Page of novels\r\n"
     "- PageUp: Previous Page of novels\r\n"
     "- Ctrl+J: Jump to Chapter by number\r\n"
+    "- Ctrl+B: Bookmark current chapter\r\n"
+    "- Ctrl+U: Update bookmark to current chapter\r\n"
+    "- Ctrl+L: Load saved bookmark to resume reading\r\n"
     "- Alt+N: Next Chapter\r\n"
     "- Alt+P: Previous Chapter\r\n"
     "- F5: Reload current source\r\n\r\n"
@@ -60,7 +64,8 @@ WELCOME_TEXT = (
     "3. In Novels, press Enter to load chapters. Use PageDown / PageUp to browse pages.\r\n"
     "4. In Chapters, press Enter to open a chapter (or press Ctrl+J to jump directly).\r\n"
     "5. In the Reading Section, use Up Arrow and Down Arrow to read line-by-line with NVDA.\r\n"
-    "6. Press Alt+N to move to the next chapter anytime."
+    "6. Press Alt+N to move to the next chapter anytime.\r\n"
+    "7. Press Ctrl+B to bookmark your chapter, Ctrl+U to update it as you read, or Ctrl+L to resume anytime."
 )
 
 # Explicit Positive IDs for Accelerator Table (Essential Shortcuts Only)
@@ -70,6 +75,109 @@ ID_HOTKEY_NEXT_PAGE = 2003
 ID_HOTKEY_PREV_CHAPTER = 2004
 ID_HOTKEY_NEXT_CHAPTER = 2005
 ID_HOTKEY_JUMP_CHAPTER = 2006
+ID_HOTKEY_BOOKMARK = 2007
+ID_HOTKEY_UPDATE_BOOKMARK = 2008
+ID_HOTKEY_LOAD_BOOKMARK = 2009
+
+
+class BookmarkDialog(wx.Dialog):
+    """Accessible dialog for selecting, loading, and managing novel bookmarks."""
+
+    def __init__(self, parent: wx.Window, bookmarks: List[dict], db: Database) -> None:
+        super().__init__(
+            parent,
+            title="Saved Bookmarks",
+            size=(700, 430),
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
+        self.bookmarks = list(bookmarks)
+        self.db = db
+        self.selected_bookmark: Optional[dict] = None
+
+        panel = wx.Panel(self)
+        sizer = wx.BoxSizer(wx.VERTICAL)
+
+        lbl = wx.StaticText(
+            panel,
+            label="Select a bookmark to resume reading (Use Up/Down arrows and press Enter):",
+        )
+        sizer.Add(lbl, 0, wx.ALL, 10)
+
+        choices = self._format_choices()
+        self.list_bookmarks = wx.ListBox(panel, choices=choices, style=wx.LB_SINGLE)
+        self.list_bookmarks.SetName("Saved Bookmarks List")
+        if choices:
+            self.list_bookmarks.SetSelection(0)
+        sizer.Add(self.list_bookmarks, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.btn_load = wx.Button(panel, wx.ID_OK, label="Load Bookmark (Enter)")
+        self.btn_load.SetDefault()
+        self.btn_load.SetName("Load Selected Bookmark")
+
+        self.btn_delete = wx.Button(panel, label="Delete Bookmark (Alt+D)")
+        self.btn_delete.SetName("Delete Selected Bookmark (Alt+D)")
+
+        self.btn_cancel = wx.Button(panel, wx.ID_CANCEL, label="Close (Esc)")
+        self.btn_cancel.SetName("Close Dialog (Esc)")
+
+        btn_sizer.Add(self.btn_load, 0, wx.RIGHT, 8)
+        btn_sizer.Add(self.btn_delete, 0, wx.RIGHT, 8)
+        btn_sizer.Add(self.btn_cancel, 0)
+        sizer.Add(btn_sizer, 0, wx.ALIGN_RIGHT | wx.RIGHT | wx.BOTTOM, 10)
+
+        panel.SetSizer(sizer)
+
+        self.list_bookmarks.Bind(wx.EVT_LISTBOX_DCLICK, self._on_load)
+        self.list_bookmarks.Bind(wx.EVT_KEY_DOWN, self._on_key_down)
+        self.btn_load.Bind(wx.EVT_BUTTON, self._on_load)
+        self.btn_delete.Bind(wx.EVT_BUTTON, self._on_delete)
+
+        self.CenterOnParent()
+
+    def _format_choices(self) -> List[str]:
+        items = []
+        for bm in self.bookmarks:
+            date_str = bm.get("updated_at", "")[:16]
+            novel = bm.get("novel_title", "Novel")
+            ch_idx = bm.get("chapter_index", 1)
+            ch_tit = bm.get("chapter_title", "Chapter")
+            src = bm.get("source_name", "")
+            items.append(f"{novel} - Chapter {ch_idx}: {ch_tit} [{src}] ({date_str})")
+        return items
+
+    def _on_key_down(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
+            self._on_load(None)
+        elif event.GetKeyCode() == wx.WXK_DELETE:
+            self._on_delete(None)
+        else:
+            event.Skip()
+
+    def _on_load(self, event: Optional[wx.Event]) -> None:
+        idx = self.list_bookmarks.GetSelection()
+        if idx != wx.NOT_FOUND and idx < len(self.bookmarks):
+            self.selected_bookmark = self.bookmarks[idx]
+            self.EndModal(wx.ID_OK)
+
+    def _on_delete(self, event: Optional[wx.Event]) -> None:
+        idx = self.list_bookmarks.GetSelection()
+        if idx == wx.NOT_FOUND or idx >= len(self.bookmarks):
+            return
+
+        bm = self.bookmarks[idx]
+        bm_id = bm.get("id")
+        if bm_id:
+            self.db.delete_novel_bookmark(bm_id)
+
+        del self.bookmarks[idx]
+        choices = self._format_choices()
+        self.list_bookmarks.Set(choices)
+        if choices:
+            new_idx = min(idx, len(choices) - 1)
+            self.list_bookmarks.SetSelection(new_idx)
+        else:
+            self.EndModal(wx.ID_CANCEL)
 
 
 class NovelReaderFrame(wx.Frame):
@@ -84,6 +192,7 @@ class NovelReaderFrame(wx.Frame):
 
         self.sources = default_sources
         self.announcer = get_default_announcer()
+        self.db = Database()
 
         # State
         self.categories: List[CategoryItem] = []
@@ -247,9 +356,21 @@ class NovelReaderFrame(wx.Frame):
         self.btn_next_chapter = wx.Button(panel, label="Next Chapter (Alt+N) >")
         self.btn_next_chapter.SetName("Next Chapter (Alt+N)")
 
+        self.btn_bookmark = wx.Button(panel, label="Bookmark (Ctrl+B)")
+        self.btn_bookmark.SetName("Bookmark Current Chapter (Ctrl+B)")
+
+        self.btn_update_bookmark = wx.Button(panel, label="Update Bookmark (Ctrl+U)")
+        self.btn_update_bookmark.SetName("Update Bookmark to Current Chapter (Ctrl+U)")
+
+        self.btn_load_bookmark = wx.Button(panel, label="Load Bookmark (Ctrl+L)")
+        self.btn_load_bookmark.SetName("Load Saved Bookmark (Ctrl+L)")
+
         nav_sizer.Add(self.btn_prev_chapter, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
         nav_sizer.Add(self.lbl_chapter_title, 1, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
-        nav_sizer.Add(self.btn_next_chapter, 0, wx.ALIGN_CENTER_VERTICAL)
+        nav_sizer.Add(self.btn_next_chapter, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        nav_sizer.Add(self.btn_bookmark, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        nav_sizer.Add(self.btn_update_bookmark, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        nav_sizer.Add(self.btn_load_bookmark, 0, wx.ALIGN_CENTER_VERTICAL)
 
         col3_sizer.Add(nav_sizer, 0, wx.EXPAND | wx.BOTTOM, 8)
 
@@ -310,6 +431,9 @@ class NovelReaderFrame(wx.Frame):
 
         self.btn_prev_chapter.Bind(wx.EVT_BUTTON, self.on_prev_chapter)
         self.btn_next_chapter.Bind(wx.EVT_BUTTON, self.on_next_chapter)
+        self.btn_bookmark.Bind(wx.EVT_BUTTON, self.on_save_bookmark)
+        self.btn_update_bookmark.Bind(wx.EVT_BUTTON, self.on_update_bookmark)
+        self.btn_load_bookmark.Bind(wx.EVT_BUTTON, self.on_load_bookmark)
 
         self.btn_prev_page.Bind(wx.EVT_BUTTON, self.on_prev_page)
         self.btn_next_page.Bind(wx.EVT_BUTTON, self.on_next_page)
@@ -322,6 +446,9 @@ class NovelReaderFrame(wx.Frame):
             wx.AcceleratorEntry(wx.ACCEL_ALT, ord('P'), ID_HOTKEY_PREV_CHAPTER),
             wx.AcceleratorEntry(wx.ACCEL_ALT, ord('N'), ID_HOTKEY_NEXT_CHAPTER),
             wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('J'), ID_HOTKEY_JUMP_CHAPTER),
+            wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('B'), ID_HOTKEY_BOOKMARK),
+            wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('U'), ID_HOTKEY_UPDATE_BOOKMARK),
+            wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('L'), ID_HOTKEY_LOAD_BOOKMARK),
         ]
         self.SetAcceleratorTable(wx.AcceleratorTable(accel_entries))
 
@@ -332,6 +459,9 @@ class NovelReaderFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_prev_chapter, id=ID_HOTKEY_PREV_CHAPTER)
         self.Bind(wx.EVT_MENU, self.on_next_chapter, id=ID_HOTKEY_NEXT_CHAPTER)
         self.Bind(wx.EVT_MENU, self.on_jump_to_chapter, id=ID_HOTKEY_JUMP_CHAPTER)
+        self.Bind(wx.EVT_MENU, self.on_save_bookmark, id=ID_HOTKEY_BOOKMARK)
+        self.Bind(wx.EVT_MENU, self.on_update_bookmark, id=ID_HOTKEY_UPDATE_BOOKMARK)
+        self.Bind(wx.EVT_MENU, self.on_load_bookmark, id=ID_HOTKEY_LOAD_BOOKMARK)
 
     def _on_resize(self, event: wx.SizeEvent) -> None:
         self.Layout()
@@ -916,7 +1046,202 @@ class NovelReaderFrame(wx.Frame):
         else:
             self.SetStatusText("Already at first chapter.", 0)
 
-    # ---------------- 7. Auto-Updater Integration ----------------
+    # ---------------- 7. Bookmark Lifecycle & Persistence ----------------
+
+    def on_save_bookmark(self, event: Optional[wx.Event] = None) -> None:
+        if not self.current_novel or not self.current_chapter:
+            self.announcer.speak("No chapter is currently open to bookmark.")
+            self.SetStatusText("Open a novel chapter first to bookmark it.", 0)
+            return
+
+        source = self.current_source or self._get_active_source()
+        source_name = source.name if source else "FreeWebNovel"
+        novel_title = self.current_novel.title
+        novel_url = self.current_novel.url
+        chapter_idx = self.current_chapter.index
+        chapter_title = self.current_chapter.title
+        chapter_url = self.current_chapter.url
+
+        self.db.save_novel_bookmark(
+            source_name=source_name,
+            novel_title=novel_title,
+            novel_url=novel_url,
+            chapter_index=chapter_idx,
+            chapter_title=chapter_title,
+            chapter_url=chapter_url,
+        )
+
+        msg = f"Bookmarked {novel_title}, Chapter {chapter_idx}: {chapter_title}."
+        self.SetStatusText(msg, 0)
+        self.announcer.speak(msg)
+
+    def on_update_bookmark(self, event: Optional[wx.Event] = None) -> None:
+        if not self.current_novel or not self.current_chapter:
+            self.announcer.speak("No chapter is currently open to update bookmark.")
+            self.SetStatusText("Open a novel chapter first to update bookmark.", 0)
+            return
+
+        source = self.current_source or self._get_active_source()
+        source_name = source.name if source else "FreeWebNovel"
+        novel_title = self.current_novel.title
+        novel_url = self.current_novel.url
+        chapter_idx = self.current_chapter.index
+        chapter_title = self.current_chapter.title
+        chapter_url = self.current_chapter.url
+
+        existing = self.db.get_novel_bookmark(novel_url)
+        self.db.save_novel_bookmark(
+            source_name=source_name,
+            novel_title=novel_title,
+            novel_url=novel_url,
+            chapter_index=chapter_idx,
+            chapter_title=chapter_title,
+            chapter_url=chapter_url,
+        )
+
+        if existing:
+            msg = f"Bookmark updated to Chapter {chapter_idx}: {chapter_title} for {novel_title}."
+        else:
+            msg = f"Created bookmark at Chapter {chapter_idx}: {chapter_title} for {novel_title}."
+
+        self.SetStatusText(msg, 0)
+        self.announcer.speak(msg)
+
+    def on_load_bookmark(self, event: Optional[wx.Event] = None) -> None:
+        bookmarks = self.db.list_novel_bookmarks()
+        if not bookmarks:
+            self.announcer.speak("No saved bookmarks found.")
+            wx.MessageBox(
+                "No saved bookmarks found.\r\n\r\nTo save a bookmark, read a chapter and click 'Bookmark' or press Ctrl+B.",
+                "Bookmarks",
+                wx.OK | wx.ICON_INFORMATION,
+                self,
+            )
+            return
+
+        if len(bookmarks) == 1:
+            self._resume_from_bookmark(bookmarks[0])
+            return
+
+        dlg = BookmarkDialog(self, bookmarks, self.db)
+        if dlg.ShowModal() == wx.ID_OK and dlg.selected_bookmark:
+            target_bm = dlg.selected_bookmark
+            dlg.Destroy()
+            self._resume_from_bookmark(target_bm)
+        else:
+            dlg.Destroy()
+
+    def _resume_from_bookmark(self, bm: dict) -> None:
+        source_name = bm.get("source_name", "")
+        novel_title = bm.get("novel_title", "")
+        novel_url = bm.get("novel_url", "")
+        target_ch_idx = bm.get("chapter_index", 1)
+        target_ch_title = bm.get("chapter_title", "")
+        target_ch_url = bm.get("chapter_url", "")
+
+        # 1. Switch to source if available
+        source = self.sources.get_source(source_name)
+        if source:
+            idx = self.choice_source.FindString(source.name)
+            if idx != wx.NOT_FOUND:
+                self.choice_source.SetSelection(idx)
+            self.current_source = source
+        else:
+            source = self.current_source or self._get_active_source()
+
+        # 2. Set current novel and show in novel list
+        novel = NovelItem(
+            id=novel_url.rstrip("/").split("/")[-1],
+            title=novel_title,
+            url=novel_url,
+            source_name=source.name if source else source_name,
+        )
+        self.current_novel = novel
+
+        novel_titles = [n.title for n in self.novels]
+        if novel_title in novel_titles:
+            n_idx = novel_titles.index(novel_title)
+            self.list_novels.SetSelection(n_idx)
+        else:
+            self.novels = [novel]
+            self.list_novels.Set([novel.title])
+            self.list_novels.SetSelection(0)
+
+        self.SetStatusText(f"Resuming bookmark: {novel_title}, Chapter {target_ch_idx}...", 0)
+        self.announcer.speak(f"Loading bookmark for {novel_title}, Chapter {target_ch_idx}...")
+
+        # 3. Fetch chapter catalog and jump to chapter
+        self._chap_token += 1
+        token = self._chap_token
+
+        def worker() -> None:
+            try:
+                cache_key = f"{source.name}:{novel.url}" if source else novel.url
+                if cache_key in self._chapter_cache:
+                    chapters = self._chapter_cache[cache_key]
+                else:
+                    chapters = source.get_chapters(novel.url) if source else []
+                    self._chapter_cache[cache_key] = chapters
+
+                if token != self._chap_token:
+                    return
+
+                def on_chapters_ready() -> None:
+                    if token != self._chap_token:
+                        return
+                    self.all_chapters = list(chapters)
+                    self.current_range_idx = 0
+                    total = len(self.all_chapters)
+                    if not chapters:
+                        self.chapters = []
+                        self.list_chapters.Set(["No chapters available for this novel"])
+                        self.choice_chapter_range.Hide()
+                        self.btn_jump_chapter.Disable()
+                        self.btn_sort_chapters.Disable()
+                        self.Layout()
+                        self.announcer.speak(f"No chapters found for {novel_title}.")
+                        return
+
+                    self.btn_jump_chapter.Enable(True)
+                    self.btn_sort_chapters.Enable(True)
+
+                    if not self.chapter_sort_asc:
+                        self.all_chapters.reverse()
+
+                    target_ch = None
+                    for ch in self.all_chapters:
+                        if ch.url == target_ch_url or ch.index == target_ch_idx:
+                            target_ch = ch
+                            break
+                    if not target_ch and self.all_chapters:
+                        target_ch = self.all_chapters[0]
+
+                    bucket = 0
+                    item_idx = 0
+                    if target_ch and total > self.chapter_range_size:
+                        bucket = (target_ch.index - 1) // self.chapter_range_size
+                        item_idx = (target_ch.index - 1) % self.chapter_range_size
+                    elif target_ch:
+                        item_idx = target_ch.index - 1
+
+                    self._rebuild_chapter_ranges(select_bucket=bucket, select_item=item_idx)
+
+                    if target_ch:
+                        self._load_chapter_by_url(target_ch.url)
+                        msg = f"Loaded bookmark: {novel_title}, Chapter {target_ch.index}: {target_ch.title}."
+                        self.SetStatusText(msg, 0)
+                        self.announcer.speak(msg)
+
+                safe_call_after(on_chapters_ready)
+
+            except Exception as e:
+                logging.error(f"Failed to load bookmark: {e}", exc_info=True)
+                if token == self._chap_token:
+                    safe_call_after(self._on_error, f"Failed to load bookmark: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ---------------- 8. Auto-Updater Integration ----------------
 
     def _start_background_update_check(self) -> None:
         def _bg() -> None:

@@ -86,6 +86,20 @@ class Database:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_bookmarks_book ON bookmarks(book_id);
+
+                CREATE TABLE IF NOT EXISTS novel_bookmarks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_name TEXT NOT NULL,
+                    novel_title TEXT NOT NULL,
+                    novel_url TEXT NOT NULL UNIQUE,
+                    chapter_index INTEGER DEFAULT 1,
+                    chapter_title TEXT NOT NULL,
+                    chapter_url TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_novel_bookmarks_updated ON novel_bookmarks(updated_at DESC);
                 """
             )
 
@@ -231,4 +245,61 @@ class Database:
     def delete_bookmark(self, bookmark_id: int) -> bool:
         with self._get_connection() as conn:
             cur = conn.execute("DELETE FROM bookmarks WHERE id = ?", (bookmark_id,))
+            return cur.rowcount > 0
+
+    def save_novel_bookmark(
+        self,
+        source_name: str,
+        novel_title: str,
+        novel_url: str,
+        chapter_index: int,
+        chapter_title: str,
+        chapter_url: str,
+    ) -> int:
+        """
+        Save or update a novel bookmark in-place.
+        Updates existing bookmark for the same novel without creating duplicates.
+        """
+        with self._get_connection() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO novel_bookmarks (
+                    source_name, novel_title, novel_url, chapter_index, chapter_title, chapter_url, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(novel_url) DO UPDATE SET
+                    source_name=excluded.source_name,
+                    novel_title=excluded.novel_title,
+                    chapter_index=excluded.chapter_index,
+                    chapter_title=excluded.chapter_title,
+                    chapter_url=excluded.chapter_url,
+                    updated_at=CURRENT_TIMESTAMP;
+                """,
+                (source_name, novel_title, novel_url, chapter_index, chapter_title, chapter_url),
+            )
+            return cur.lastrowid or 0
+
+    def get_novel_bookmark(self, novel_url: str) -> Optional[dict]:
+        """Retrieve saved bookmark for a specific novel URL."""
+        with self._get_connection() as conn:
+            cur = conn.execute("SELECT * FROM novel_bookmarks WHERE novel_url = ?", (novel_url,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def list_novel_bookmarks(self) -> List[dict]:
+        """List all saved novel bookmarks ordered by most recently updated."""
+        with self._get_connection() as conn:
+            cur = conn.execute("SELECT * FROM novel_bookmarks ORDER BY updated_at DESC")
+            return [dict(row) for row in cur.fetchall()]
+
+    def get_latest_novel_bookmark(self) -> Optional[dict]:
+        """Retrieve the most recently updated novel bookmark."""
+        with self._get_connection() as conn:
+            cur = conn.execute("SELECT * FROM novel_bookmarks ORDER BY updated_at DESC LIMIT 1")
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def delete_novel_bookmark(self, bookmark_id: int) -> bool:
+        """Delete a novel bookmark by ID."""
+        with self._get_connection() as conn:
+            cur = conn.execute("DELETE FROM novel_bookmarks WHERE id = ?", (bookmark_id,))
             return cur.rowcount > 0
