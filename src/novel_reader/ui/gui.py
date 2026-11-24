@@ -674,14 +674,22 @@ class NovelReaderFrame(wx.Frame):
 
         self.SetStatusText(message, 0)
 
-        # Select first novel and fetch its chapters
+        # Set novel selection; strictly do NOT fetch chapters until user presses Enter
         if novels:
             self.list_novels.SetSelection(0)
-            self._fetch_chapters_for_novel(novels[0])
+            self.list_chapters.Set(["Press Enter on a novel to load its chapters"])
+            self.btn_jump_chapter.Disable()
+            self.btn_sort_chapters.Disable()
+            self.choice_chapter_range.Hide()
+            self.Layout()
             if self.current_page > 1:
                 self.announcer.speak(f"Page {self.current_page} loaded. {len(novels)} novels.")
         else:
-            self.list_chapters.Set(["No chapters available"])
+            self.list_chapters.Set(["No novels found in this category"])
+            self.btn_jump_chapter.Disable()
+            self.btn_sort_chapters.Disable()
+            self.choice_chapter_range.Hide()
+            self.Layout()
 
     def on_prev_page(self, event: Optional[wx.Event]) -> None:
         if self.FindFocus() == self.txt_reading:

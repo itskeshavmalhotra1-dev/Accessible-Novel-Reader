@@ -23,7 +23,7 @@ import requests
 
 from novel_reader.accessibility.announcer import get_default_announcer
 
-CURRENT_VERSION = "26.0"
+CURRENT_VERSION = "26.0.1"
 DEFAULT_GITHUB_REPO = os.environ.get("NOVEL_READER_REPO", "itskeshavmalhotra1-dev/Accessible-Novel-Reader")
 USER_AGENT = f"AccessibleNovelReader-Updater/{CURRENT_VERSION}"
 
@@ -287,15 +287,18 @@ if WX_AVAILABLE:
             main_sizer.Add(self.lbl_header, 0, wx.ALL | wx.EXPAND, 12)
 
             # Release Notes / Changelog
-            lbl_notes = wx.StaticText(panel, label="What's New in this Release:")
+            lbl_notes = wx.StaticText(panel, label="What's New in this Release (Changelog):")
             main_sizer.Add(lbl_notes, 0, wx.LEFT | wx.RIGHT, 12)
+
+            raw_notes = update_info.get("changelog", "No release notes provided.")
+            crlf_notes = raw_notes.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
 
             self.txt_changelog = wx.TextCtrl(
                 panel,
-                value=update_info.get("changelog", "No release notes provided."),
+                value=crlf_notes,
                 style=wx.TE_MULTILINE | wx.TE_READONLY,
             )
-            self.txt_changelog.SetName("Release Notes Changelog")
+            self.txt_changelog.SetName("Release Notes Changelog (Read line by line with Up and Down arrow keys)")
             main_sizer.Add(self.txt_changelog, 1, wx.ALL | wx.EXPAND, 12)
 
             # Progress Gauge
@@ -306,20 +309,19 @@ if WX_AVAILABLE:
 
             self.lbl_status = wx.StaticText(
                 panel,
-                label="Press 'Update Now' to automatically download and apply this update.",
+                label="Read the changelog above. Press 'Update Now' to apply this update.",
             )
             self.lbl_status.SetName("Update Status")
             main_sizer.Add(self.lbl_status, 0, wx.ALL | wx.EXPAND, 12)
 
             # Action Buttons
             btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-            self.btn_update = wx.Button(panel, label="Update Now")
-            self.btn_update.SetName("Update Now")
-            self.btn_update.SetDefault()
+            self.btn_update = wx.Button(panel, label="Update Now (Alt+U)")
+            self.btn_update.SetName("Update Now (Alt+U)")
             self.btn_update.Bind(wx.EVT_BUTTON, self.on_start_update)
             btn_sizer.Add(self.btn_update, 0, wx.RIGHT, 8)
 
-            self.btn_later = wx.Button(panel, wx.ID_CANCEL, label="Later")
+            self.btn_later = wx.Button(panel, wx.ID_CANCEL, label="Later (Esc)")
             self.btn_later.SetName("Later (Close)")
             btn_sizer.Add(self.btn_later, 0)
 
@@ -327,6 +329,14 @@ if WX_AVAILABLE:
 
             panel.SetSizer(main_sizer)
             self.CenterOnParent()
+
+            # Place focus on Changelog text control so screen reader announces and reads it immediately
+            self.txt_changelog.SetInsertionPoint(0)
+            self.txt_changelog.SetFocus()
+
+            self.announcer.speak(
+                f"Update {new_ver} available! Changelog is open. Use Up and Down arrow keys to read what is new, then press Tab to Update Now or Later."
+            )
 
         def on_start_update(self, event: wx.Event) -> None:
             if self.is_downloading:
