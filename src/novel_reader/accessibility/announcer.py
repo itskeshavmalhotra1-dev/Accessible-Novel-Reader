@@ -56,11 +56,13 @@ class ScreenReaderAnnouncer:
         sys.stdout.flush()
 
         if self._speech:
-            try:
-                self._speech.output(cleaned, interrupt=interrupt)
-                return
-            except Exception:
-                pass
+            def _async_output() -> None:
+                try:
+                    self._speech.output(cleaned, interrupt=interrupt)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_async_output, daemon=True).start()
 
     def stop(self) -> None:
         """Stop current speech output."""

@@ -223,6 +223,7 @@ class NovelReaderFrame(wx.Frame):
         self._novel_token: int = 0
         self._chap_token: int = 0
         self._content_token: int = 0
+        self._loading_novel_url: Optional[str] = None
 
         self._init_ui()
         self._bind_events()
@@ -275,7 +276,7 @@ class NovelReaderFrame(wx.Frame):
         # Column 1 (Left): Categories / Genres
         col1_sizer = wx.BoxSizer(wx.VERTICAL)
         lbl_cats = wx.StaticText(panel, label="Categories:")
-        self.list_categories = wx.ListBox(panel, style=wx.LB_SINGLE | wx.WANTS_CHARS)
+        self.list_categories = wx.ListBox(panel, style=wx.LB_SINGLE)
         self.list_categories.SetName("Categories")
         self.list_categories.Set(["Loading categories..."])
         col1_sizer.Add(lbl_cats, 0, wx.BOTTOM, 4)
@@ -286,7 +287,7 @@ class NovelReaderFrame(wx.Frame):
         col2_sizer = wx.BoxSizer(wx.VERTICAL)
 
         lbl_novels = wx.StaticText(panel, label="Novels:")
-        self.list_novels = wx.ListBox(panel, style=wx.LB_SINGLE | wx.WANTS_CHARS)
+        self.list_novels = wx.ListBox(panel, style=wx.LB_SINGLE)
         self.list_novels.SetName("Novels")
         self.list_novels.Set(["Select a category to view novels"])
 
@@ -331,7 +332,7 @@ class NovelReaderFrame(wx.Frame):
         chap_header_sizer.Add(self.btn_jump_chapter, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
         chap_header_sizer.Add(self.btn_sort_chapters, 0, wx.ALIGN_CENTER_VERTICAL)
 
-        self.list_chapters = wx.ListBox(panel, style=wx.LB_SINGLE | wx.WANTS_CHARS)
+        self.list_chapters = wx.ListBox(panel, style=wx.LB_SINGLE)
         self.list_chapters.SetName("Chapters")
         self.list_chapters.Set(["Select a novel to view chapters"])
 
@@ -483,6 +484,12 @@ class NovelReaderFrame(wx.Frame):
                 return
             elif focused == self.list_chapters:
                 self.on_chapter_selected(None)
+                return
+        elif key == wx.WXK_TAB:
+            focused = self.FindFocus()
+            if focused:
+                flags = wx.NavigationKeyEvent.IsBackward if event.ShiftDown() else wx.NavigationKeyEvent.IsForward
+                focused.Navigate(flags)
                 return
         event.Skip()
 
@@ -769,6 +776,9 @@ class NovelReaderFrame(wx.Frame):
         self._fetch_chapters_for_novel(novel)
 
     def _fetch_chapters_for_novel(self, novel: NovelItem) -> None:
+        if self._loading_novel_url == novel.url:
+            return
+
         self._chap_token += 1
         token = self._chap_token
         self.current_novel = novel
@@ -782,6 +792,7 @@ class NovelReaderFrame(wx.Frame):
             self._update_chapter_list(chapters, token)
             return
 
+        self._loading_novel_url = novel.url
         self.SetStatusText(f"Loading chapters for '{novel.title}'...", 0)
         self.announcer.speak(f"Loading chapters for {novel.title}...")
 
@@ -795,6 +806,9 @@ class NovelReaderFrame(wx.Frame):
                 logging.error(f"Failed to load chapters: {e}", exc_info=True)
                 if token == self._chap_token:
                     safe_call_after(self._on_error, f"Failed to load chapters: {e}")
+            finally:
+                if self._loading_novel_url == novel.url:
+                    self._loading_novel_url = None
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -802,6 +816,7 @@ class NovelReaderFrame(wx.Frame):
         if token != self._chap_token:
             return
 
+        self._loading_novel_url = None
         self.all_chapters = list(chapters)
         self.current_range_idx = 0
         total = len(self.all_chapters)
@@ -831,9 +846,6 @@ class NovelReaderFrame(wx.Frame):
             self.announcer.speak(f"{total} chapters loaded. Viewing chapters 1 to {min(total, self.chapter_range_size)}.")
         else:
             self.announcer.speak(msg)
-
-        # Move focus directly to chapters list for screen reader announcement and quick browsing
-        self.list_chapters.SetFocus()
 
     def _rebuild_chapter_ranges(self, select_bucket: int = 0, select_item: int = 0) -> None:
         total = len(self.all_chapters)
