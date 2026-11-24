@@ -178,15 +178,16 @@ class FreeWebNovelSource(BaseNovelSource):
 
             def fetch_chapter_page(p: int) -> str:
                 ajax_url = f"{clean_novel_url}?ajax=chapters&page={p}&pageSize=200"
-                data = http_get_json(ajax_url, timeout=12)
+                headers = {"Referer": novel_url}
+                data = http_get_json(ajax_url, headers=headers, timeout=15)
                 if not data:
-                    time.sleep(0.3)
-                    data = http_get_json(ajax_url, timeout=15)
+                    time.sleep(0.5)
+                    data = http_get_json(ajax_url, headers=headers, timeout=15)
                 if data and isinstance(data, dict):
                     return data.get("html", "")
                 return ""
 
-            with ThreadPoolExecutor(max_workers=min(4, total_pages)) as executor:
+            with ThreadPoolExecutor(max_workers=min(2, total_pages)) as executor:
                 results = list(executor.map(fetch_chapter_page, pages_to_fetch))
 
             combined_html = "".join(results)

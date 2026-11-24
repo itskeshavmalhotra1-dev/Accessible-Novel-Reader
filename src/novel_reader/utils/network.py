@@ -1,12 +1,13 @@
 """
 Robust network utilities for Light Novel sources.
-Prefers curl_cffi with Chrome 124 browser impersonation to bypass Cloudflare TLS fingerprinting,
+Prefers curl_cffi with persistent Chrome 124 browser session to bypass Cloudflare TLS fingerprinting,
 falling back gracefully to standard requests if needed.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any, Dict, Optional
 from bs4 import BeautifulSoup
@@ -20,8 +21,10 @@ DEFAULT_HEADERS = {
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Upgrade-Insecure-Requests": "1",
 }
 
 try:
@@ -33,6 +36,31 @@ except ImportError:
 
 import requests as std_requests
 
+_CURL_SESSION: Optional[Any] = None
+_STD_SESSION: Optional[std_requests.Session] = None
+_SESSION_LOCK = threading.Lock()
+
+
+def get_curl_session() -> Optional[Any]:
+    global _CURL_SESSION
+    if _CURL_SESSION is None and HAS_CURL_CFFI and curl_requests:
+        with _SESSION_LOCK:
+            if _CURL_SESSION is None:
+                try:
+                    _CURL_SESSION = curl_requests.Session(impersonate="chrome124")
+                except Exception as e:
+                    logger.debug("Failed to create curl_cffi session: %s", e)
+    return _CURL_SESSION
+
+
+def get_std_session() -> std_requests.Session:
+    global _STD_SESSION
+    if _STD_SESSION is None:
+        with _SESSION_LOCK:
+            if _STD_SESSION is None:
+                _STD_SESSION = std_requests.Session()
+    return _STD_SESSION
+
 
 def http_get(
     url: str,
@@ -40,53 +68,48 @@ def http_get(
     timeout: int = 15,
     extra_headers: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
-    """Fetch URL text with anti-bot evasion and fallback."""
+    """Fetch URL text with anti-bot evasion, persistent session, and fallback."""
     req_headers = dict(DEFAULT_HEADERS)
     if headers:
         req_headers.update(headers)
     if extra_headers:
         req_headers.update(extra_headers)
 
-    # 1. Try curl_cffi first with Chrome 124 impersonation
-    if HAS_CURL_CFFI and curl_requests:
+    # 1. Try curl_cffi first with Chrome 124 session
+    session = get_curl_session()
+    if session:
+        for attempt in range(2):
+            try:
+                resp = session.get(url, headers=req_headers, timeout=timeout)
+                if resp.status_code == 200:
+                    return resp.text
+                elif resp.status_code == 429:
+                    logger.warning("curl_cffi HTTP 429 (Rate Limited) for %s, retrying after 1.5s", url)
+                    time.sleep(1.5)
+                    continue
+                elif resp.status_code != 404:
+                    logger.warning("curl_cffi HTTP %d for %s", resp.status_code, url)
+                    break
+            except Exception as e:
+                logger.debug("curl_cffi failed for %s: %s", url, e)
+                break
+
+    # 2. Fallback to standard requests session
+    std_s = get_std_session()
+    for attempt in range(2):
         try:
-            resp = curl_requests.get(
-                url,
-                headers=req_headers,
-                impersonate="chrome124",
-                timeout=timeout,
-            )
+            resp = std_s.get(url, headers=req_headers, timeout=timeout)
             if resp.status_code == 200:
                 return resp.text
             elif resp.status_code == 429:
-                logger.warning("curl_cffi HTTP 429 (Rate Limited) for %s, retrying after 1.2s", url)
-                time.sleep(1.2)
-                resp = curl_requests.get(
-                    url,
-                    headers=req_headers,
-                    impersonate="chrome124",
-                    timeout=timeout,
-                )
-                if resp.status_code == 200:
-                    return resp.text
-            elif resp.status_code != 404:
-                logger.warning("curl_cffi HTTP %d for %s", resp.status_code, url)
+                logger.warning("std_requests HTTP 429 for %s, retrying after 1.5s", url)
+                time.sleep(1.5)
+                continue
+            logger.warning("std_requests HTTP %d for %s", resp.status_code, url)
+            break
         except Exception as e:
-            logger.debug("curl_cffi failed for %s: %s", url, e)
-
-    # 2. Fallback to standard requests
-    try:
-        resp = std_requests.get(url, headers=req_headers, timeout=timeout)
-        if resp.status_code == 200:
-            return resp.text
-        elif resp.status_code == 429:
-            time.sleep(1.2)
-            resp = std_requests.get(url, headers=req_headers, timeout=timeout)
-            if resp.status_code == 200:
-                return resp.text
-        logger.warning("std_requests HTTP %d for %s", resp.status_code, url)
-    except Exception as e:
-        logger.warning("std_requests failed for %s: %s", url, e)
+            logger.warning("std_requests failed for %s: %s", url, e)
+            break
 
     return None
 
@@ -110,43 +133,39 @@ def http_get_json(
 ) -> Optional[Any]:
     """Fetch URL and parse as JSON."""
     req_headers = dict(DEFAULT_HEADERS)
+    req_headers["X-Requested-With"] = "XMLHttpRequest"
+    req_headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
+    req_headers["Sec-Fetch-Dest"] = "empty"
+    req_headers["Sec-Fetch-Mode"] = "cors"
     if headers:
         req_headers.update(headers)
-    req_headers["X-Requested-With"] = "XMLHttpRequest"
 
-    if HAS_CURL_CFFI and curl_requests:
+    session = get_curl_session()
+    if session:
+        for attempt in range(2):
+            try:
+                resp = session.get(url, headers=req_headers, timeout=timeout)
+                if resp.status_code == 200:
+                    return resp.json()
+                elif resp.status_code == 429:
+                    logger.warning("curl_cffi json HTTP 429 for %s, retrying after 1.5s", url)
+                    time.sleep(1.5)
+                    continue
+            except Exception as e:
+                logger.debug("curl_cffi json failed for %s: %s", url, e)
+                break
+
+    std_s = get_std_session()
+    for attempt in range(2):
         try:
-            resp = curl_requests.get(
-                url,
-                headers=req_headers,
-                impersonate="chrome124",
-                timeout=timeout,
-            )
+            resp = std_s.get(url, headers=req_headers, timeout=timeout)
             if resp.status_code == 200:
                 return resp.json()
             elif resp.status_code == 429:
-                time.sleep(1.2)
-                resp = curl_requests.get(
-                    url,
-                    headers=req_headers,
-                    impersonate="chrome124",
-                    timeout=timeout,
-                )
-                if resp.status_code == 200:
-                    return resp.json()
+                time.sleep(1.5)
+                continue
         except Exception as e:
-            logger.debug("curl_cffi json failed for %s: %s", url, e)
-
-    try:
-        resp = std_requests.get(url, headers=req_headers, timeout=timeout)
-        if resp.status_code == 200:
-            return resp.json()
-        elif resp.status_code == 429:
-            time.sleep(1.2)
-            resp = std_requests.get(url, headers=req_headers, timeout=timeout)
-            if resp.status_code == 200:
-                return resp.json()
-    except Exception as e:
-        logger.warning("std_requests json failed for %s: %s", url, e)
+            logger.warning("std_requests json failed for %s: %s", url, e)
+            break
 
     return None

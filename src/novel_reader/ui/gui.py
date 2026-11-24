@@ -485,6 +485,9 @@ class NovelReaderFrame(wx.Frame):
             elif focused == self.list_chapters:
                 self.on_chapter_selected(None)
                 return
+            elif focused == self.btn_load_chapters:
+                self.on_novel_selected(None)
+                return
         elif key == wx.WXK_TAB:
             focused = self.FindFocus()
             if focused:
@@ -762,15 +765,16 @@ class NovelReaderFrame(wx.Frame):
     # ---------------- 4. Novel Selection -> Chapter List ----------------
 
     def on_novel_selected(self, event: Optional[wx.Event]) -> None:
+        if not self.novels:
+            return
+
         idx = self.list_novels.GetSelection()
         if idx == wx.NOT_FOUND or idx < 0:
-            if self.novels:
-                idx = 0
-                self.list_novels.SetSelection(0)
-            else:
-                return
-        if idx >= len(self.novels):
-            return
+            idx = 0
+            self.list_novels.SetSelection(0)
+        elif idx >= len(self.novels):
+            idx = len(self.novels) - 1
+            self.list_novels.SetSelection(idx)
 
         novel = self.novels[idx]
         self._fetch_chapters_for_novel(novel)
@@ -782,7 +786,11 @@ class NovelReaderFrame(wx.Frame):
         self._chap_token += 1
         token = self._chap_token
         self.current_novel = novel
-        source = self.current_source or self._get_active_source()
+        source = (
+            self.sources.get_source(novel.source_name)
+            if hasattr(novel, "source_name") and novel.source_name
+            else None
+        ) or self.current_source or self._get_active_source()
         if not source:
             return
 
@@ -793,6 +801,9 @@ class NovelReaderFrame(wx.Frame):
             return
 
         self._loading_novel_url = novel.url
+        self.btn_load_chapters.Disable()
+        self.btn_load_chapters.SetLabel("Loading Chapters...")
+        self.list_chapters.Set([f"Loading chapters for '{novel.title}', please wait..."])
         self.SetStatusText(f"Loading chapters for '{novel.title}'...", 0)
         self.announcer.speak(f"Loading chapters for {novel.title}...")
 
@@ -805,7 +816,14 @@ class NovelReaderFrame(wx.Frame):
             except Exception as e:
                 logging.error(f"Failed to load chapters: {e}", exc_info=True)
                 if token == self._chap_token:
-                    safe_call_after(self._on_error, f"Failed to load chapters: {e}")
+                    def _on_failed() -> None:
+                        self._loading_novel_url = None
+                        self.btn_load_chapters.Enable(True)
+                        self.btn_load_chapters.SetLabel("Load Chapters for Selected Novel (Enter)")
+                        self.list_chapters.Set([f"Failed to load chapters: {e}"])
+                        self.SetStatusText(f"Failed to load chapters: {e}", 0)
+                        self.announcer.speak(f"Failed to load chapters for {novel.title}.")
+                    safe_call_after(_on_failed)
             finally:
                 if self._loading_novel_url == novel.url:
                     self._loading_novel_url = None
@@ -817,6 +835,8 @@ class NovelReaderFrame(wx.Frame):
             return
 
         self._loading_novel_url = None
+        self.btn_load_chapters.Enable(True)
+        self.btn_load_chapters.SetLabel("Load Chapters for Selected Novel (Enter)")
         self.all_chapters = list(chapters)
         self.current_range_idx = 0
         total = len(self.all_chapters)
@@ -824,7 +844,7 @@ class NovelReaderFrame(wx.Frame):
 
         if not chapters:
             self.chapters = []
-            self.list_chapters.Set(["No chapters available for this novel"])
+            self.list_chapters.Set([f"No chapters found for '{title}'. Try switching source or reloading."])
             self.choice_chapter_range.Hide()
             self.btn_jump_chapter.Disable()
             self.btn_sort_chapters.Disable()
